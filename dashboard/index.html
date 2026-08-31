@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KalshiTrader</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>⚡ KalshiTrader</h1>
+    <div class="header-right">
+      <span id="env-badge" class="badge">—</span>
+      <span id="conn-badge" class="badge off">disconnected</span>
+      <span id="halt-badge" class="badge danger" hidden>HALTED</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Overview metrics -->
+    <section class="metrics">
+      <div class="metric"><label>Account Equity</label><span id="m-equity">—</span></div>
+      <div class="metric"><label>Available Cash</label><span id="m-balance">—</span></div>
+      <div class="metric"><label>Working Capital</label><span id="m-exposure">—</span></div>
+      <div class="metric"><label>Realized PnL</label><span id="m-realized">—</span></div>
+      <div class="metric"><label>Unrealized PnL</label><span id="m-unrealized">—</span></div>
+      <div class="metric"><label>Orders Placed</label><span id="m-orders">—</span></div>
+    </section>
+
+    <div class="grid">
+      <!-- Equity chart -->
+      <section class="panel span2">
+        <h2>Equity Curve</h2>
+        <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
+      </section>
+
+      <!-- Bot controller -->
+      <section class="panel">
+        <h2>Bot Controller</h2>
+        <div id="strategies"></div>
+        <div class="controller-footer">
+          <button id="cancel-all" class="btn danger">Cancel All Orders</button>
+          <button id="risk-reset" class="btn warn" hidden>Reset Circuit Breaker</button>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section class="panel">
+        <h2>Settings</h2>
+        <form id="settings-form">
+          <label>Mode
+            <select name="env">
+              <option value="demo">Demo (paper)</option>
+              <option value="live">LIVE (real money)</option>
+            </select>
+          </label>
+          <label>Scan Interval (seconds)
+            <input type="number" name="scan_interval_seconds" min="1" step="0.5" />
+          </label>
+          <label>Contracts Per Side
+            <input type="number" name="contracts_per_side" min="1" />
+          </label>
+          <label>Min Profit Threshold (cents)
+            <input type="number" name="min_profit_cents" min="1" max="50" />
+          </label>
+          <label>Edge Buffer (cents)
+            <input type="number" name="edge_buffer_cents" min="0" max="50" />
+          </label>
+          <label>Max Allocation ($)
+            <input type="number" name="max_money_working_dollars" min="0" step="1" />
+          </label>
+          <label>Max Contracts / Order
+            <input type="number" name="max_contracts_per_order" min="1" />
+          </label>
+          <label>Daily Stop Loss (%)
+            <input type="number" name="daily_stop_loss_pct" min="0.1" step="0.1" />
+          </label>
+          <label>Order TTL (seconds)
+            <input type="number" name="order_ttl_seconds" min="5" />
+          </label>
+          <label>Target Tickers (comma-separated)
+            <input type="text" name="arb_tickers" placeholder="KXBTCD-25AUG3117-T110000" />
+          </label>
+          <label>Target Series (comma-separated)
+            <input type="text" name="arb_series" placeholder="KXBTCD" />
+          </label>
+          <label>Fair Values (JSON: {"TICKER": 62})
+            <textarea name="fair_values" rows="2" placeholder='{"SOME-TICKER": 62}'></textarea>
+          </label>
+          <button type="submit" class="btn primary">Save Settings</button>
+          <span id="settings-status"></span>
+        </form>
+      </section>
+
+      <!-- Orders -->
+      <section class="panel span2">
+        <h2>Orders</h2>
+        <div class="table-wrap">
+          <table id="orders-table">
+            <thead><tr>
+              <th>Time</th><th>Strategy</th><th>Ticker</th><th>Action</th>
+              <th>Side</th><th>Qty</th><th>Price</th><th>Status</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Fills -->
+      <section class="panel">
+        <h2>Fills</h2>
+        <div class="table-wrap">
+          <table id="fills-table">
+            <thead><tr>
+              <th>Time</th><th>Ticker</th><th>Action</th><th>Side</th><th>Qty</th><th>Price</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Activity log -->
+      <section class="panel span3">
+        <h2>Live Activity</h2>
+        <div id="activity-log" class="terminal"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

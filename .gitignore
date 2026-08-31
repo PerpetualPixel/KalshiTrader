@@ -1,0 +1,29 @@
+# Credentials & secrets — never commit these
+.env
+keys/*
+!keys/README.md
+*.pem
+*.key
+
+# Data
+*.db
+*.sqlite3
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# Node (if a JS frontend is added later)
+node_modules/
+dist/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
