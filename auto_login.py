@@ -75,6 +75,10 @@ def login_with_pin(pin):
 
     if not session_token:
         print("❌ No session token received")
+        print(f"   Cookies received: {dict(cookies)}")
+        print(f"   Response status: {resp.status_code}")
+        print(f"   Response headers: {dict(resp.headers)}")
+        print(f"   Try logging in via browser at http://127.0.0.1:8000")
         sys.exit(1)
 
     print(f"✓ Logged in!")
