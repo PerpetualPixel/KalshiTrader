@@ -1,16 +1,24 @@
-/* KalshiTrader dashboard: REST for state, WebSocket for the live stream. */
+/* KalshiTrader dashboard: login-gated; REST for state, WebSocket for live stream. */
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
 const fmtUsd = (cents) =>
   cents == null ? "—" : (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
 const fmtTime = (iso) => new Date(iso).toLocaleTimeString();
+const fmtDateTime = (iso) => {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toLocaleTimeString()}`;
+};
 
 async function api(path, opts = {}) {
   const resp = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
+  if (resp.status === 401) {
+    showLogin();
+    throw new Error("not authenticated");
+  }
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
     throw new Error(body.detail || resp.statusText);
@@ -18,54 +26,180 @@ async function api(path, opts = {}) {
   return resp.json();
 }
 
-/* ── Equity chart ─────────────────────────────────────────────────── */
+/* ── Login / setup ────────────────────────────────────────────────── */
 
-const chart = new Chart($("#equity-chart"), {
+let setupMode = false;
+
+function showLogin() {
+  $("#login-overlay").hidden = false;
+}
+
+async function checkAuth() {
+  const status = await fetch("/api/auth/status").then((r) => r.json());
+  setupMode = status.setup_required;
+  if (setupMode) {
+    $("#login-subtitle").textContent = "First run — create a dashboard password (min 8 characters)";
+    $("#login-password2").hidden = false;
+    $("#login-password").autocomplete = "new-password";
+    $("#login-submit").textContent = "Create Password";
+  }
+  if (!status.authenticated || setupMode) {
+    showLogin();
+    return false;
+  }
+  return true;
+}
+
+$("#login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errEl = $("#login-error");
+  errEl.textContent = "";
+  const password = $("#login-password").value;
+  if (setupMode && password !== $("#login-password2").value) {
+    errEl.textContent = "passwords do not match";
+    return;
+  }
+  try {
+    const path = setupMode ? "/api/auth/setup" : "/api/auth/login";
+    const resp = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      throw new Error(body.detail || resp.statusText);
+    }
+    $("#login-overlay").hidden = true;
+    await boot();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+$("#logout-btn").addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  location.reload();
+});
+
+/* ── Charts ───────────────────────────────────────────────────────── */
+
+// Never let chart setup take down the rest of the dashboard.
+function makeChart(canvasSel, config) {
+  try {
+    return new Chart($(canvasSel), config);
+  } catch (err) {
+    console.error(`chart init failed for ${canvasSel}:`, err);
+    return null;
+  }
+}
+
+const axisOpts = (moneyAxis = true) => ({
+  x: { ticks: { color: "#7a8399", maxTicksLimit: 8 }, grid: { color: "#1a2030" } },
+  y: {
+    ticks: {
+      color: "#7a8399",
+      callback: moneyAxis ? (v) => "$" + (v / 100).toFixed(2) : undefined,
+    },
+    grid: { color: "#1a2030" },
+  },
+});
+
+const equityChart = makeChart("#equity-chart", {
   type: "line",
   data: {
     labels: [],
     datasets: [
-      {
-        label: "Equity",
-        data: [],
-        borderColor: "#4f8ff7",
-        backgroundColor: "rgba(79,143,247,0.12)",
-        fill: true,
-        tension: 0.25,
-        pointRadius: 0,
-      },
-      {
-        label: "Cash",
-        data: [],
-        borderColor: "#2fbf71",
-        borderDash: [4, 4],
-        fill: false,
-        tension: 0.25,
-        pointRadius: 0,
-      },
+      { label: "Equity", data: [], borderColor: "#4f8ff7", backgroundColor: "rgba(79,143,247,0.12)", fill: true, tension: 0.25, pointRadius: 0 },
+      { label: "Cash", data: [], borderColor: "#2fbf71", borderDash: [4, 4], fill: false, tension: 0.25, pointRadius: 0 },
     ],
   },
   options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    scales: {
-      x: { ticks: { color: "#7a8399", maxTicksLimit: 8 }, grid: { color: "#1a2030" } },
-      y: {
-        ticks: { color: "#7a8399", callback: (v) => "$" + (v / 100).toFixed(2) },
-        grid: { color: "#1a2030" },
-      },
-    },
+    responsive: true, maintainAspectRatio: false, animation: false,
+    scales: axisOpts(),
     plugins: { legend: { labels: { color: "#d6dbe8" } } },
+  },
+});
+
+const profitChart = makeChart("#profit-chart", {
+  type: "line",
+  data: {
+    labels: [],
+    datasets: [{
+      label: "Net Profit",
+      data: [],
+      borderColor: "#2fbf71",
+      backgroundColor: "rgba(47,191,113,0.12)",
+      fill: true,
+      stepped: true,
+      pointRadius: 2,
+    }],
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    scales: axisOpts(),
+    plugins: { legend: { display: false } },
+  },
+});
+
+const tickerChart = makeChart("#ticker-chart", {
+  type: "bar",
+  data: { labels: [], datasets: [{ label: "Net PnL", data: [], backgroundColor: [] }] },
+  options: {
+    indexAxis: "y",
+    responsive: true, maintainAspectRatio: false, animation: false,
+    scales: {
+      x: { ticks: { color: "#7a8399", callback: (v) => "$" + (v / 100).toFixed(2) }, grid: { color: "#1a2030" } },
+      y: { ticks: { color: "#7a8399", font: { size: 10 } }, grid: { display: false } },
+    },
+    plugins: { legend: { display: false } },
   },
 });
 
 async function refreshEquity() {
   const history = await api("/api/equity_history");
-  chart.data.labels = history.map((h) => fmtTime(h.time));
-  chart.data.datasets[0].data = history.map((h) => h.equity_cents);
-  chart.data.datasets[1].data = history.map((h) => h.balance_cents);
-  chart.update();
+  if (!equityChart) return;
+  equityChart.data.labels = history.map((h) => fmtTime(h.time));
+  equityChart.data.datasets[0].data = history.map((h) => h.equity_cents);
+  equityChart.data.datasets[1].data = history.map((h) => h.balance_cents);
+  equityChart.update();
+}
+
+/* ── PnL / trades ─────────────────────────────────────────────────── */
+
+async function refreshPnl() {
+  const pnl = await api("/api/pnl");
+
+  const netEl = $("#m-net");
+  netEl.textContent = fmtUsd(pnl.total_net_cents);
+  netEl.className = pnl.total_net_cents > 0 ? "pos" : pnl.total_net_cents < 0 ? "neg" : "";
+  $("#m-trades").textContent = pnl.trades.length;
+
+  if (profitChart) {
+    profitChart.data.labels = pnl.cumulative.map((p) => fmtDateTime(p.time));
+    profitChart.data.datasets[0].data = pnl.cumulative.map((p) => p.net_cents);
+    profitChart.update();
+  }
+
+  if (tickerChart) {
+    const tickers = Object.keys(pnl.by_ticker);
+    tickerChart.data.labels = tickers.map((t) => (t.length > 22 ? t.slice(0, 20) + "…" : t));
+    tickerChart.data.datasets[0].data = tickers.map((t) => pnl.by_ticker[t]);
+    tickerChart.data.datasets[0].backgroundColor = tickers.map((t) =>
+      pnl.by_ticker[t] >= 0 ? "rgba(47,191,113,0.7)" : "rgba(229,72,77,0.7)"
+    );
+    tickerChart.update();
+  }
+
+  $("#trades-table tbody").innerHTML = pnl.trades
+    .map((t) => {
+      const cls = t.net_cents > 0 ? "buy" : t.net_cents < 0 ? "sell" : "";
+      return `<tr>
+        <td>${fmtDateTime(t.time)}</td><td>${t.ticker}</td><td>${t.side}</td>
+        <td>${t.count}</td><td>${fmtUsd(t.cost_cents)}</td><td>${fmtUsd(t.proceeds_cents)}</td>
+        <td class="${cls}">${fmtUsd(t.net_cents)}</td><td>${t.kind}</td></tr>`;
+    })
+    .join("");
 }
 
 /* ── Overview metrics ─────────────────────────────────────────────── */
@@ -74,12 +208,6 @@ function renderOverview(o) {
   $("#m-equity").textContent = fmtUsd(o.equity_cents);
   $("#m-balance").textContent = fmtUsd(o.balance_cents);
   $("#m-exposure").textContent = fmtUsd(o.exposure_cents);
-  const pnl = (el, cents) => {
-    el.textContent = fmtUsd(cents);
-    el.className = cents > 0 ? "pos" : cents < 0 ? "neg" : "";
-  };
-  pnl($("#m-realized"), o.realized_pnl_cents);
-  pnl($("#m-unrealized"), o.unrealized_pnl_cents);
   $("#m-orders").textContent = o.orders_placed ?? "—";
   $("#halt-badge").hidden = !o.halted;
   $("#risk-reset").hidden = !o.halted;
@@ -125,11 +253,66 @@ async function refreshStatus() {
     logLine({
       level: "error",
       source: "config",
-      message: `API client not ready: ${status.client_error || "check .env credentials"}`,
+      message: `API client not ready: ${status.client_error || "add credentials in the API Credentials panel"}`,
       time: new Date().toISOString(),
     });
   }
 }
+
+/* ── Credentials ──────────────────────────────────────────────────── */
+
+async function refreshCredentials() {
+  const creds = await api("/api/credentials");
+  const rows = ["demo", "live"].map((env) => {
+    const c = creds[env];
+    const state = c.configured
+      ? `<span class="ok">✓ ${c.key_id_masked} (${c.source})</span>`
+      : `<span class="missing">not configured</span>`;
+    const active = creds.active_env === env ? " ← active" : "";
+    return `<div class="row"><span>${env.toUpperCase()}${active}</span>${state}</div>`;
+  });
+  $("#cred-status").innerHTML = rows.join("");
+}
+
+$("#cred-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (file) $("#cred-form").private_key_pem.value = await file.text();
+});
+
+$("#cred-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const resultEl = $("#cred-result");
+  resultEl.textContent = "testing…";
+  resultEl.style.color = "var(--muted)";
+  try {
+    const res = await api("/api/credentials", {
+      method: "PUT",
+      body: JSON.stringify({
+        env: form.env.value,
+        key_id: form.key_id.value,
+        private_key_pem: form.private_key_pem.value,
+      }),
+    });
+    if (res.connection_ok === false) {
+      resultEl.textContent = `saved, but connection failed: ${res.error}`;
+      resultEl.style.color = "var(--amber)";
+    } else if (res.connection_ok) {
+      resultEl.textContent = `connected ✓ balance ${fmtUsd(res.balance_cents)}`;
+      resultEl.style.color = "var(--green)";
+    } else {
+      resultEl.textContent = "saved ✓ (inactive environment, not tested)";
+      resultEl.style.color = "var(--green)";
+    }
+    form.key_id.value = "";
+    form.private_key_pem.value = "";
+    $("#cred-file").value = "";
+    await Promise.all([refreshCredentials(), refreshStatus()]);
+  } catch (err) {
+    resultEl.textContent = err.message;
+    resultEl.style.color = "var(--red)";
+  }
+});
 
 /* ── Tables ───────────────────────────────────────────────────────── */
 
@@ -138,7 +321,7 @@ async function refreshOrders() {
   $("#orders-table tbody").innerHTML = orders
     .map(
       (o) => `<tr>
-        <td>${fmtTime(o.time)}</td><td>${o.strategy}</td><td>${o.ticker}</td>
+        <td>${fmtDateTime(o.time)}</td><td>${o.strategy}</td><td>${o.ticker}</td>
         <td class="${o.action}">${o.action}</td><td>${o.side}</td>
         <td>${o.count}</td><td>${o.price_cents}c</td><td>${o.status}</td></tr>`
     )
@@ -150,7 +333,7 @@ async function refreshFills() {
   $("#fills-table tbody").innerHTML = fills
     .map(
       (f) => `<tr>
-        <td>${fmtTime(f.time)}</td><td>${f.ticker}</td>
+        <td>${fmtDateTime(f.time)}</td><td>${f.ticker}</td>
         <td class="${f.action}">${f.action}</td><td>${f.side}</td>
         <td>${f.count}</td><td>${f.price_cents}c</td></tr>`
     )
@@ -214,7 +397,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     await api("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
     statusEl.textContent = "saved ✓";
     statusEl.style.color = "var(--green)";
-    await refreshStatus();
+    await Promise.all([refreshStatus(), refreshCredentials()]);
   } catch (err) {
     statusEl.textContent = err.message;
     statusEl.style.color = "var(--red)";
@@ -261,38 +444,52 @@ function connectWs() {
     $("#conn-badge").textContent = "live";
     $("#conn-badge").className = "badge on";
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     $("#conn-badge").textContent = "disconnected";
     $("#conn-badge").className = "badge off";
-    setTimeout(connectWs, 3000);
+    if (ev.code !== 4401) setTimeout(connectWs, 3000);
   };
   ws.onmessage = (msg) => {
     const event = JSON.parse(msg.data);
     if (event.type === "activity") logLine(event);
     else if (event.type === "overview") {
       renderOverview(event);
-      refreshEquity();
+      refreshEquity().catch(() => {});
     } else if (event.type === "orders_changed") {
-      refreshOrders();
-      refreshFills();
+      refreshOrders().catch(() => {});
+    } else if (event.type === "trades_changed") {
+      refreshFills().catch(() => {});
+      refreshPnl().catch(() => {});
     }
   };
 }
 
 /* ── Boot ─────────────────────────────────────────────────────────── */
 
-(async function init() {
+async function boot() {
   try {
     const activity = await api("/api/activity");
+    $("#activity-log").innerHTML = "";
     activity.forEach(logLine);
     renderOverview(await api("/api/overview"));
-    await Promise.all([refreshStatus(), refreshEquity(), refreshOrders(), refreshFills(), loadSettings()]);
+    await Promise.all([
+      refreshStatus(), refreshEquity(), refreshOrders(), refreshFills(),
+      refreshPnl(), refreshCredentials(), loadSettings(),
+    ]);
   } catch (err) {
-    logLine({ level: "error", source: "ui", message: `init failed: ${err.message}`, time: new Date().toISOString() });
+    if (err.message !== "not authenticated") {
+      logLine({ level: "error", source: "ui", message: `init failed: ${err.message}`, time: new Date().toISOString() });
+    }
+    return;
   }
   connectWs();
   setInterval(() => {
     refreshOrders().catch(() => {});
     refreshFills().catch(() => {});
+    refreshPnl().catch(() => {});
   }, 30000);
+}
+
+(async function init() {
+  if (await checkAuth()) await boot();
 })();

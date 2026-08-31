@@ -10,6 +10,7 @@ import uuid
 from typing import Any, Callable
 
 from .config import BotSettings, EnvConfig
+from .credentials import CredentialStore
 from .database import Database
 from .kalshi_client import KalshiAPIError, KalshiClient
 from .risk_manager import RiskManager
@@ -33,6 +34,7 @@ class BotEngine:
         self.env_config = env_config
         self.db = db
         self.settings: BotSettings = db.load_settings(env_config.env)
+        self.credentials = CredentialStore(db, env_config)
         self.risk = RiskManager(self.settings)
         self.client: KalshiClient | None = None
         self.client_error: str | None = None
@@ -74,10 +76,13 @@ class BotEngine:
         if self.client is not None:
             asyncio.get_event_loop().create_task(self.client.close())
             self.client = None
-        key_id, key_path = self.env_config.credentials_for(self.settings.env)
+        key_id, key_path = self.credentials.credentials_for(self.settings.env)
         try:
             if not key_id:
-                raise ValueError("KALSHI_KEY_ID is not set (see .env.example)")
+                raise ValueError(
+                    "no API credentials — add them in the dashboard's API "
+                    "Credentials panel or set KALSHI_KEY_ID in .env"
+                )
             self.client = KalshiClient(self._api_base(), key_id, key_path)
             self.client_error = None
         except Exception as exc:  # noqa: BLE001 — surface config problems in the UI
@@ -346,37 +351,94 @@ class BotEngine:
             for name in self.strategies:
                 await self.pause_strategy(name)
 
+    async def rebuild_client(self) -> tuple[bool, str]:
+        """Rebuild the API client (after credential changes) and test it.
+
+        Returns (ok, detail) where detail is a balance string or an error.
+        """
+        self._build_client()
+        if self.client is None:
+            return False, self.client_error or "client could not be built"
+        try:
+            balance = await self.client.get_balance()
+        except KalshiAPIError as exc:
+            return False, str(exc)
+        await self.log(
+            f"API connection verified — balance ${balance / 100:.2f} "
+            f"({self.settings.env})",
+            "info",
+        )
+        return True, f"{balance}"
+
     async def _fill_sync_loop(self) -> None:
         while True:
             try:
                 if self.client is not None:
-                    for fill in await self.client.get_fills(limit=100):
-                        is_new = self.db.upsert_fill(
-                            env=self.settings.env,
-                            fill_id=str(fill.get("trade_id") or fill.get("fill_id") or ""),
-                            order_id=str(fill.get("order_id", "")),
-                            ticker=str(fill.get("ticker", "")),
-                            side=str(fill.get("side", "")),
-                            action=str(fill.get("action", "")),
-                            count=int(fill.get("count", 0)),
-                            price_cents=int(
-                                fill.get("yes_price")
-                                if fill.get("side") == "yes"
-                                else fill.get("no_price") or 0
-                            ),
-                            raw=fill,
-                        )
-                        if is_new:
-                            await self.log(
-                                f"FILL [{fill.get('ticker')}] {fill.get('action')} "
-                                f"{fill.get('count')} {fill.get('side')}",
-                                "fill", "fills",
-                            )
+                    changed = await self._sync_fills()
+                    changed |= await self._sync_settlements()
+                    if changed:
+                        self._emit({"type": "trades_changed"})
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fill sync failed: %s", exc)
             await asyncio.sleep(FILL_SYNC_INTERVAL)
+
+    async def _sync_fills(self) -> bool:
+        assert self.client is not None
+        changed = False
+        for fill in await self.client.get_fills(limit=100):
+            side = str(fill.get("side", ""))
+            is_new = self.db.upsert_fill(
+                env=self.settings.env,
+                fill_id=str(fill.get("trade_id") or fill.get("fill_id") or ""),
+                order_id=str(fill.get("order_id", "")),
+                ticker=str(fill.get("ticker", "")),
+                side=side,
+                action=str(fill.get("action", "")),
+                count=int(fill.get("count", 0)),
+                price_cents=int(
+                    (fill.get("yes_price") if side == "yes" else fill.get("no_price"))
+                    or 0
+                ),
+                raw=fill,
+            )
+            if is_new:
+                changed = True
+                await self.log(
+                    f"FILL [{fill.get('ticker')}] {fill.get('action')} "
+                    f"{fill.get('count')} {fill.get('side')} @ "
+                    f"{(fill.get('yes_price') if side == 'yes' else fill.get('no_price')) or '?'}c",
+                    "fill", "fills",
+                )
+        return changed
+
+    async def _sync_settlements(self) -> bool:
+        assert self.client is not None
+        changed = False
+        try:
+            settlements = await self.client.get_settlements(limit=100)
+        except KalshiAPIError:
+            return False  # endpoint not critical; retry next cycle
+        for st in settlements:
+            ticker = str(st.get("ticker", ""))
+            key = f"{ticker}:{st.get('settled_time', st.get('settled_ts', ''))}"
+            is_new = self.db.upsert_settlement(
+                env=self.settings.env,
+                settlement_key=key,
+                ticker=ticker,
+                market_result=str(st.get("market_result", "")),
+                revenue_cents=int(st.get("revenue", 0) or 0),
+                raw=st,
+            )
+            if is_new:
+                changed = True
+                await self.log(
+                    f"SETTLED [{ticker}] result={st.get('market_result')} "
+                    f"revenue {int(st.get('revenue', 0) or 0)}c",
+                    "fill", "settlements",
+                )
+        return changed
 
     # ── Status for the API ────────────────────────────────────────────
 

@@ -10,21 +10,24 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .auth import COOKIE_NAME, AuthManager
 from .bot_engine import BotEngine
 from .config import env_config
 from .database import Database
 from .kalshi_client import KalshiAPIError
+from .pnl import compute_pnl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 env_config.ensure_dirs()
 db = Database(env_config.database_path)
 engine = BotEngine(env_config, db)
+auth = AuthManager(db)
 
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 
@@ -37,6 +40,72 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="KalshiTrader", lifespan=lifespan)
+
+AUTH_EXEMPT_PATHS = {"/api/auth/status", "/api/auth/setup", "/api/auth/login"}
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """Every /api route except the auth handshake requires a valid session."""
+    path = request.url.path
+    if path.startswith("/api") and path not in AUTH_EXEMPT_PATHS:
+        if not auth.verify_token(request.cookies.get(COOKIE_NAME)):
+            return JSONResponse({"detail": "not authenticated"}, status_code=401)
+    return await call_next(request)
+
+
+# ── Auth ──────────────────────────────────────────────────────────────
+
+
+class PasswordBody(BaseModel):
+    password: str
+
+
+def _set_session_cookie(response: Response) -> None:
+    response.set_cookie(
+        COOKIE_NAME,
+        auth.issue_token(),
+        httponly=True,
+        samesite="lax",
+        max_age=7 * 24 * 3600,
+    )
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request) -> dict[str, Any]:
+    return {
+        "setup_required": not auth.is_configured(),
+        "authenticated": auth.verify_token(request.cookies.get(COOKIE_NAME)),
+    }
+
+
+@app.post("/api/auth/setup")
+async def auth_setup(body: PasswordBody, response: Response) -> dict[str, Any]:
+    if auth.is_configured():
+        raise HTTPException(409, "password already set — log in instead")
+    try:
+        auth.set_password(body.password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.record_audit("auth_password_created", {}, actor="dashboard")
+    _set_session_cookie(response)
+    return {"ok": True}
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: PasswordBody, response: Response) -> dict[str, Any]:
+    if not auth.is_configured():
+        raise HTTPException(409, "no password set — run setup first")
+    if not auth.verify_password(body.password):
+        raise HTTPException(401, "incorrect password")
+    _set_session_cookie(response)
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response) -> dict[str, Any]:
+    response.delete_cookie(COOKIE_NAME)
+    return {"ok": True}
 
 
 # ── REST API ──────────────────────────────────────────────────────────
@@ -104,6 +173,55 @@ async def get_markets(status: str = "open", series_ticker: str | None = None) ->
         raise HTTPException(502, str(exc)) from exc
 
 
+@app.get("/api/pnl")
+async def get_pnl() -> dict[str, Any]:
+    """Trade-level realized PnL: per-trade rows, cumulative curve, by-ticker."""
+    return compute_pnl(db.fills_for_pnl(), db.settlements_for_pnl())
+
+
+# ── API credentials (GUI-managed) ─────────────────────────────────────
+
+
+class CredentialsBody(BaseModel):
+    env: str
+    key_id: str
+    private_key_pem: str
+
+
+@app.get("/api/credentials")
+async def get_credentials() -> dict[str, Any]:
+    return {"active_env": engine.settings.env, **engine.credentials.describe()}
+
+
+@app.put("/api/credentials")
+async def put_credentials(body: CredentialsBody) -> dict[str, Any]:
+    try:
+        engine.credentials.save(body.env, body.key_id, body.private_key_pem)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — bad PEM parse errors vary
+        raise HTTPException(400, f"invalid private key: {exc}") from exc
+    db.record_audit("credentials_updated", {"env": body.env}, actor="dashboard")
+    result: dict[str, Any] = {"saved": True, "env": body.env}
+    if body.env == engine.settings.env:
+        ok, detail = await engine.rebuild_client()
+        result["connection_ok"] = ok
+        result["balance_cents"] = int(detail) if ok else None
+        result["error"] = None if ok else detail
+    return result
+
+
+@app.delete("/api/credentials/{env}")
+async def delete_credentials(env: str) -> dict[str, Any]:
+    if env not in ("demo", "live"):
+        raise HTTPException(400, "env must be 'demo' or 'live'")
+    engine.credentials.clear(env)
+    db.record_audit("credentials_cleared", {"env": env}, actor="dashboard")
+    if env == engine.settings.env:
+        await engine.rebuild_client()
+    return {"cleared": True}
+
+
 # ── Settings ──────────────────────────────────────────────────────────
 
 
@@ -137,9 +255,12 @@ async def put_settings(patch: SettingsPatch) -> dict[str, Any]:
             raise HTTPException(
                 400, "Switching to LIVE trading requires confirm_live=true"
             )
-        key_id, _ = env_config.credentials_for("live")
+        key_id, _ = engine.credentials.credentials_for("live")
         if not key_id:
-            raise HTTPException(400, "No live credentials configured in .env")
+            raise HTTPException(
+                400,
+                "No live credentials configured — add them in the API Credentials panel",
+            )
     if data.get("env") not in (None, "demo", "live"):
         raise HTTPException(400, "env must be 'demo' or 'live'")
     settings = await engine.apply_settings(data)
@@ -183,6 +304,9 @@ async def cancel_all() -> dict[str, int]:
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
+    if not auth.verify_token(ws.cookies.get(COOKIE_NAME)):
+        await ws.close(code=4401, reason="not authenticated")
+        return
     await ws.accept()
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=500)
 

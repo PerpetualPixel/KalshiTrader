@@ -96,6 +96,19 @@ class AuditTrail(Base):
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
+class SettlementRecord(Base):
+    __tablename__ = "settlements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    env: Mapped[str] = mapped_column(String(8))
+    settlement_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    ticker: Mapped[str] = mapped_column(String(64), index=True)
+    market_result: Mapped[str] = mapped_column(String(8), default="")
+    revenue_cents: Mapped[int] = mapped_column(Integer, default=0)
+    raw: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
 class SettingsRow(Base):
     __tablename__ = "settings"
 
@@ -133,6 +146,22 @@ class Database:
                 row.value = payload
             s.commit()
 
+    # ── Generic key/value (auth, credentials) ─────────────────────────
+
+    def get_kv(self, key: str) -> str | None:
+        with self.session() as s:
+            row = s.get(SettingsRow, key)
+            return row.value if row else None
+
+    def set_kv(self, key: str, value: str) -> None:
+        with self.session() as s:
+            row = s.get(SettingsRow, key)
+            if row is None:
+                s.add(SettingsRow(key=key, value=value))
+            else:
+                row.value = value
+            s.commit()
+
     # ── Writes ────────────────────────────────────────────────────────
 
     def log_activity(self, message: str, level: str = "info", source: str = "system") -> ActivityLog:
@@ -162,6 +191,20 @@ class Database:
             if existing is not None:
                 return False
             s.add(FillRecord(**kwargs))
+            s.commit()
+            return True
+
+    def upsert_settlement(self, **kwargs: Any) -> bool:
+        """Insert a settlement if unseen; returns True when newly recorded."""
+        with self.session() as s:
+            existing = s.execute(
+                select(SettlementRecord).where(
+                    SettlementRecord.settlement_key == kwargs["settlement_key"]
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return False
+            s.add(SettlementRecord(**kwargs))
             s.commit()
             return True
 
@@ -207,6 +250,39 @@ class Database:
                     "action": r.action,
                     "count": r.count,
                     "price_cents": r.price_cents,
+                }
+                for r in rows
+            ]
+
+    def fills_for_pnl(self) -> list[dict[str, Any]]:
+        """All fills ascending by time, shaped for src.pnl.compute_pnl."""
+        with self.session() as s:
+            rows = s.execute(
+                select(FillRecord).order_by(FillRecord.id.asc())
+            ).scalars()
+            return [
+                {
+                    "time": r.created_at.isoformat(),
+                    "ticker": r.ticker,
+                    "side": r.side,
+                    "action": r.action,
+                    "count": r.count,
+                    "price_cents": r.price_cents,
+                    "raw": r.raw,
+                }
+                for r in rows
+            ]
+
+    def settlements_for_pnl(self) -> list[dict[str, Any]]:
+        with self.session() as s:
+            rows = s.execute(
+                select(SettlementRecord).order_by(SettlementRecord.id.asc())
+            ).scalars()
+            return [
+                {
+                    "time": r.created_at.isoformat(),
+                    "ticker": r.ticker,
+                    "raw": r.raw,
                 }
                 for r in rows
             ]

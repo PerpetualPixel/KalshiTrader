@@ -20,6 +20,40 @@ body {
   font-family: "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
 
+/* Login overlay */
+.overlay[hidden] { display: none; }
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 12, 0.96);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2rem;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  text-align: center;
+}
+.login-card h1 { font-size: 1.3rem; margin: 0; }
+.login-card p { color: var(--muted); margin: 0 0 0.4rem; font-size: 0.85rem; }
+.login-card input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.55rem 0.7rem;
+  font-family: inherit;
+}
+.login-error { color: var(--red); font-size: 0.78rem; min-height: 1em; }
+
 header {
   display: flex;
   justify-content: space-between;
@@ -128,7 +162,6 @@ main { padding: 1rem 1.2rem; max-width: 1500px; margin: 0 auto; }
 .controller-footer { display: flex; gap: 0.5rem; margin-top: 0.8rem; }
 
 /* Settings */
-#settings-form { display: flex; flex-direction: column; gap: 0.55rem; }
 #settings-form label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--muted); font-size: 0.75rem; }
 #settings-form input, #settings-form select, #settings-form textarea {
   background: var(--bg);
@@ -139,6 +172,30 @@ main { padding: 1rem 1.2rem; max-width: 1500px; margin: 0 auto; }
   font-family: inherit;
 }
 #settings-status { font-size: 0.75rem; color: var(--green); }
+
+/* Credentials */
+.cred-status { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.7rem; font-size: 0.78rem; }
+.cred-status .row { display: flex; justify-content: space-between; color: var(--muted); }
+.cred-status .ok { color: var(--green); }
+.cred-status .missing { color: var(--amber); }
+#cred-form { display: flex; flex-direction: column; gap: 0.55rem; }
+#cred-form label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--muted); font-size: 0.75rem; }
+#cred-form input, #cred-form select, #cred-form textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.35rem 0.5rem;
+  font-family: inherit;
+}
+#cred-form input[type="file"] { border: none; padding: 0; font-size: 0.72rem; color: var(--muted); }
+#cred-result { font-size: 0.75rem; }
+
+/* Settings two-column grid */
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; }
+.settings-grid .wide { grid-column: span 2; }
+
+h2 .hint { color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: normal; }
 
 /* Tables */
 .table-wrap { overflow-x: auto; max-height: 300px; overflow-y: auto; }

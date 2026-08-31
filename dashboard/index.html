@@ -5,15 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>KalshiTrader</title>
   <link rel="stylesheet" href="/static/styles.css" />
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="/static/vendor/chart.umd.js"></script>
 </head>
 <body>
+  <!-- Login / first-run setup overlay -->
+  <div id="login-overlay" class="overlay" hidden>
+    <form id="login-form" class="login-card">
+      <h1>⚡ KalshiTrader</h1>
+      <p id="login-subtitle">Log in to your dashboard</p>
+      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" required minlength="8" />
+      <input type="password" id="login-password2" placeholder="Confirm password" autocomplete="new-password" hidden minlength="8" />
+      <button type="submit" class="btn primary" id="login-submit">Log In</button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+  </div>
+
   <header>
     <h1>⚡ KalshiTrader</h1>
     <div class="header-right">
       <span id="env-badge" class="badge">—</span>
       <span id="conn-badge" class="badge off">disconnected</span>
       <span id="halt-badge" class="badge danger" hidden>HALTED</span>
+      <button id="logout-btn" class="btn">Log out</button>
     </div>
   </header>
 
@@ -23,8 +36,8 @@
       <div class="metric"><label>Account Equity</label><span id="m-equity">—</span></div>
       <div class="metric"><label>Available Cash</label><span id="m-balance">—</span></div>
       <div class="metric"><label>Working Capital</label><span id="m-exposure">—</span></div>
-      <div class="metric"><label>Realized PnL</label><span id="m-realized">—</span></div>
-      <div class="metric"><label>Unrealized PnL</label><span id="m-unrealized">—</span></div>
+      <div class="metric"><label>Net Profit (realized)</label><span id="m-net">—</span></div>
+      <div class="metric"><label>Trades Closed</label><span id="m-trades">—</span></div>
       <div class="metric"><label>Orders Placed</label><span id="m-orders">—</span></div>
     </section>
 
@@ -45,10 +58,85 @@
         </div>
       </section>
 
-      <!-- Settings -->
+      <!-- Profit tracking visuals -->
+      <section class="panel span2">
+        <h2>Cumulative Net Profit</h2>
+        <div class="chart-wrap"><canvas id="profit-chart"></canvas></div>
+      </section>
       <section class="panel">
+        <h2>PnL by Market</h2>
+        <div class="chart-wrap"><canvas id="ticker-chart"></canvas></div>
+      </section>
+
+      <!-- Real-time trades -->
+      <section class="panel span2">
+        <h2>Trades <small class="hint">(realized: sells &amp; settlements, net of fees)</small></h2>
+        <div class="table-wrap">
+          <table id="trades-table">
+            <thead><tr>
+              <th>Time</th><th>Ticker</th><th>Side</th><th>Qty</th>
+              <th>Cost</th><th>Proceeds</th><th>Net Profit</th><th>Type</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Fills -->
+      <section class="panel">
+        <h2>Fills <small class="hint">(raw executions)</small></h2>
+        <div class="table-wrap">
+          <table id="fills-table">
+            <thead><tr>
+              <th>Time</th><th>Ticker</th><th>Action</th><th>Side</th><th>Qty</th><th>Price</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Orders -->
+      <section class="panel span3">
+        <h2>Orders</h2>
+        <div class="table-wrap">
+          <table id="orders-table">
+            <thead><tr>
+              <th>Time</th><th>Strategy</th><th>Ticker</th><th>Action</th>
+              <th>Side</th><th>Qty</th><th>Price</th><th>Status</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- API credentials -->
+      <section class="panel">
+        <h2>API Credentials</h2>
+        <div id="cred-status" class="cred-status"></div>
+        <form id="cred-form">
+          <label>Environment
+            <select name="env">
+              <option value="demo">Demo</option>
+              <option value="live">Live</option>
+            </select>
+          </label>
+          <label>Kalshi Key ID
+            <input type="text" name="key_id" placeholder="xxxxxxxx-xxxx-…" autocomplete="off" />
+          </label>
+          <label>RSA Private Key (.pem)
+            <textarea name="private_key_pem" rows="4"
+              placeholder="-----BEGIN PRIVATE KEY-----&#10;…paste your key, or choose the file below…"></textarea>
+          </label>
+          <input type="file" id="cred-file" accept=".pem,.key,.txt" />
+          <button type="submit" class="btn primary">Save &amp; Test Connection</button>
+          <span id="cred-result"></span>
+        </form>
+      </section>
+
+      <!-- Settings -->
+      <section class="panel span2">
         <h2>Settings</h2>
-        <form id="settings-form">
+        <form id="settings-form" class="settings-grid">
           <label>Mode
             <select name="env">
               <option value="demo">Demo (paper)</option>
@@ -79,45 +167,20 @@
           <label>Order TTL (seconds)
             <input type="number" name="order_ttl_seconds" min="5" />
           </label>
-          <label>Target Tickers (comma-separated)
+          <label class="wide">Target Tickers (comma-separated)
             <input type="text" name="arb_tickers" placeholder="KXBTCD-25AUG3117-T110000" />
           </label>
-          <label>Target Series (comma-separated)
+          <label class="wide">Target Series (comma-separated)
             <input type="text" name="arb_series" placeholder="KXBTCD" />
           </label>
-          <label>Fair Values (JSON: {"TICKER": 62})
+          <label class="wide">Fair Values (JSON: {"TICKER": 62})
             <textarea name="fair_values" rows="2" placeholder='{"SOME-TICKER": 62}'></textarea>
           </label>
-          <button type="submit" class="btn primary">Save Settings</button>
-          <span id="settings-status"></span>
+          <div class="wide">
+            <button type="submit" class="btn primary">Save Settings</button>
+            <span id="settings-status"></span>
+          </div>
         </form>
-      </section>
-
-      <!-- Orders -->
-      <section class="panel span2">
-        <h2>Orders</h2>
-        <div class="table-wrap">
-          <table id="orders-table">
-            <thead><tr>
-              <th>Time</th><th>Strategy</th><th>Ticker</th><th>Action</th>
-              <th>Side</th><th>Qty</th><th>Price</th><th>Status</th>
-            </tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- Fills -->
-      <section class="panel">
-        <h2>Fills</h2>
-        <div class="table-wrap">
-          <table id="fills-table">
-            <thead><tr>
-              <th>Time</th><th>Ticker</th><th>Action</th><th>Side</th><th>Qty</th><th>Price</th>
-            </tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
       </section>
 
       <!-- Activity log -->

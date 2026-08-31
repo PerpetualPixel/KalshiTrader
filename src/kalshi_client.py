@@ -122,6 +122,10 @@ class KalshiClient:
         data = await self._request("GET", "/portfolio/orders", params=params)
         return data.get("orders", [])
 
+    async def get_settlements(self, **params: Any) -> list[dict[str, Any]]:
+        data = await self._request("GET", "/portfolio/settlements", params=params)
+        return data.get("settlements", [])
+
     async def place_order(
         self,
         ticker: str,

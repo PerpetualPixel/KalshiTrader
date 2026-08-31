@@ -1,9 +1,10 @@
 # ⚡ KalshiTrader
 
 An automated trading bot for [Kalshi](https://kalshi.com) event contracts with a
-local web dashboard: real-time equity curve, PnL metrics, per-strategy
-start/pause/stop controls, live settings editor, and a terminal-style activity
-stream.
+login-protected local web dashboard: real-time trades with per-trade net
+profit, cumulative profit and per-market PnL charts, equity curve, in-GUI API
+credential management, per-strategy start/pause/stop controls, live settings
+editor, and a terminal-style activity stream.
 
 > **Not financial advice. Trading involves risk of loss.** Run in demo mode
 > first (see [Going live](#going-live)) and keep allocation limits low.
@@ -53,24 +54,34 @@ The core loop for each running strategy:
 - Every order, fill, settings change, and breaker event is written to the
   SQLite audit trail.
 
+## Dashboard login & credentials
+
+- **Login**: the first time you open the dashboard it asks you to create a
+  password (stored as a PBKDF2-SHA256 hash in SQLite); afterwards you log in
+  with it. Sessions are HMAC-signed httponly cookies, and every API route and
+  the WebSocket require one.
+- **API credentials in the GUI**: paste (or file-pick) your Kalshi Key ID and
+  RSA private key in the **API Credentials** panel — separate slots for demo
+  and live. The key is validated, written to `keys/<env>_key.pem` with `0600`
+  permissions, and the connection is tested immediately (it shows your
+  balance on success). GUI-saved credentials take priority over `.env` values,
+  which remain supported as a fallback.
+
+## Trades & PnL tracking
+
+The **Trades** table shows every realized trade in real time with its
+timestamp, cost, proceeds, and **net profit** (fees from the API are
+subtracted). Realization events are sells (average-cost basis) and market
+settlements (100¢ per winning contract). They feed:
+
+- the **Net Profit (realized)** metric and trades-closed count,
+- the **Cumulative Net Profit** stepped chart,
+- the **PnL by Market** bar chart (green = profitable, red = losing),
+- alongside the raw **Fills** feed and the **Equity Curve**.
+
 ## Setup
 
-### 1. Credentials
-
-1. Create an API key at kalshi.com → Account → API keys and download the
-   private key `.pem`.
-2. Save it as `keys/kalshi_private_key.pem` (the `keys/` dir is gitignored).
-3. Copy the env template and fill it in:
-
-```bash
-cp .env.example .env
-# edit .env: KALSHI_KEY_ID, KALSHI_PRIVATE_KEY_PATH, KALSHI_ENV=demo
-```
-
-**Never commit `.env` or `.pem` files** — the provided `.gitignore` already
-excludes them.
-
-### 2. Install & run
+### 1. Install & run
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -80,6 +91,19 @@ uvicorn src.main:app --reload
 ```
 
 Open **http://127.0.0.1:8000** — the dashboard is served by the same process.
+Create your dashboard password when prompted.
+
+### 2. Credentials
+
+1. Create an API key at kalshi.com → Account → API keys and download the
+   private key `.pem` (Kalshi shows it exactly once).
+2. Enter the Key ID and the key in the dashboard's **API Credentials** panel
+   and hit **Save & Test Connection** — or, if you prefer files, copy
+   `.env.example` to `.env` and set `KALSHI_KEY_ID` /
+   `KALSHI_PRIVATE_KEY_PATH` there.
+
+**Never commit `.env` or `.pem` files** — the provided `.gitignore` already
+excludes them.
 
 ### 3. Configure & start
 
@@ -116,8 +140,13 @@ Open **http://127.0.0.1:8000** — the dashboard is served by the same process.
 
 ## API endpoints
 
+All routes except the auth handshake require a logged-in session cookie.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
+| GET/POST | `/api/auth/status`, `/setup`, `/login`, `/logout` | Dashboard auth |
+| GET/PUT/DELETE | `/api/credentials` | GUI-managed API credentials (masked reads) |
+| GET | `/api/pnl` | Realized trades, cumulative profit curve, PnL by market |
 | GET | `/api/status` | Engine + per-strategy state |
 | GET | `/api/overview` | Equity, cash, PnL, order count |
 | GET | `/api/equity_history` | Equity curve snapshots |
@@ -135,8 +164,10 @@ Open **http://127.0.0.1:8000** — the dashboard is served by the same process.
 pytest
 ```
 
-Covers the risk manager (ceilings, stop-loss breaker) and the API client
-(RSA-PSS signature correctness, orderbook price derivation, input validation).
+Covers the risk manager (ceilings, stop-loss breaker), the API client
+(RSA-PSS signature correctness, orderbook price derivation, input validation),
+dashboard auth (password hashing, session tokens), and trade PnL accounting
+(average cost, settlements, fees).
 
 ## Notes
 
@@ -144,5 +175,8 @@ Covers the risk manager (ceilings, stop-loss breaker) and the API client
 - API hosts default to `api.elections.kalshi.com` (live) and
   `demo-api.kalshi.co` (demo); override with `KALSHI_API_BASE` if Kalshi
   moves hosts again.
-- The dashboard binds to `127.0.0.1` by default and has no authentication —
-  don't expose the port publicly.
+- The dashboard binds to `127.0.0.1` by default. It is password-protected,
+  but it serves over plain HTTP — keep it local (or behind a reverse proxy
+  with TLS) rather than exposing the port publicly.
+- Chart.js is vendored at `dashboard/vendor/chart.umd.js`, so the GUI works
+  fully offline with no CDN dependency.
