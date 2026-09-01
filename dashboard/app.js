@@ -357,6 +357,12 @@ async function loadSettings() {
   form.arb_tickers.value = s.arb_tickers;
   form.arb_series.value = s.arb_series;
   form.fair_values.value = JSON.stringify(s.fair_values);
+  form.swing_series.value = s.swing_series;
+  form.swing_drop_cents.value = s.swing_drop_cents;
+  form.swing_take_profit_cents.value = s.swing_take_profit_cents;
+  form.swing_stop_loss_cents.value = s.swing_stop_loss_cents;
+  form.swing_max_hold_minutes.value = s.swing_max_hold_minutes;
+  form.swing_max_positions.value = s.swing_max_positions;
 }
 
 $("#settings-form").addEventListener("submit", async (e) => {
@@ -384,6 +390,12 @@ $("#settings-form").addEventListener("submit", async (e) => {
     arb_tickers: form.arb_tickers.value,
     arb_series: form.arb_series.value,
     fair_values: fairValues,
+    swing_series: form.swing_series.value,
+    swing_drop_cents: parseInt(form.swing_drop_cents.value),
+    swing_take_profit_cents: parseInt(form.swing_take_profit_cents.value),
+    swing_stop_loss_cents: parseInt(form.swing_stop_loss_cents.value),
+    swing_max_hold_minutes: parseInt(form.swing_max_hold_minutes.value),
+    swing_max_positions: parseInt(form.swing_max_positions.value),
   };
   if (patch.env === "live") {
     const ok = confirm(

@@ -61,11 +61,14 @@ class RiskManager:
         count: int,
         price_cents: int,
         money_working_cents: int,
+        action: str = "buy",
     ) -> RiskDecision:
         """Validate a prospective order.
 
         money_working_cents: capital already committed to open orders and
-        positions, before this order.
+        positions, before this order. Sells reduce exposure, so the working-
+        capital ceiling only applies to buys — an exit must never be trapped
+        behind the allocation limit.
         """
         if self.halted:
             return RiskDecision(False, f"trading halted: {self.halt_reason}")
@@ -78,7 +81,7 @@ class RiskManager:
                 f"{self.settings.max_contracts_per_order}",
             )
         cost = count * price_cents
-        if money_working_cents + cost > self.settings.max_money_working_cents:
+        if action == "buy" and money_working_cents + cost > self.settings.max_money_working_cents:
             return RiskDecision(
                 False,
                 f"order cost {cost}c would push working capital past "

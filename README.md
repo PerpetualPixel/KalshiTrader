@@ -40,6 +40,7 @@ The core loop for each running strategy:
 | --- | --- | --- |
 | **Binary Arbitrage Scanner** | Buys YES + NO together when `yes_ask + no_ask ≤ 100¢ − min_profit`, locking in the spread at settlement | Yes |
 | **Fair Value / Edge Trader** | You supply per-ticker fair probabilities (dashboard → Fair Values); it bids when the market is cheaper than fair value minus an edge buffer | Yes |
+| **Live Swing Trader** | Buys sharp dips in live markets (in-game momentum overreactions) and cashes out on a take-profit, stop-loss, or max-hold timer — never held to settlement. **Directional risk**: the stop-loss bounds a dip that never recovers | Yes |
 | **Signal-Only Watcher** | Same detection as the arb scanner, but only emits notifications — for validating thresholds before committing capital | No |
 
 ## Risk management

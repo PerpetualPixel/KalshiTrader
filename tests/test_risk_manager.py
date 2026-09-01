@@ -39,6 +39,24 @@ def test_exactly_at_ceiling_is_allowed():
     assert decision.allowed
 
 
+def test_sell_bypasses_capital_ceiling():
+    # An exit must never be trapped behind the allocation limit.
+    rm = make_rm(max_money_working_cents=1000)
+    decision = rm.check_order(
+        count=3, price_cents=50, money_working_cents=1000, action="sell"
+    )
+    assert decision.allowed
+
+
+def test_sell_still_blocked_when_halted():
+    rm = make_rm()
+    rm.trip("test halt")
+    decision = rm.check_order(
+        count=1, price_cents=50, money_working_cents=0, action="sell"
+    )
+    assert not decision.allowed
+
+
 def test_daily_stop_trips_and_halts_orders():
     rm = make_rm(daily_stop_loss_pct=5.0)
     tripped = rm.check_daily_stop(day_start_equity_cents=10000, equity_cents=9400)

@@ -111,6 +111,30 @@ class BotSettings(BaseModel):
         default_factory=dict,
         description="ticker -> fair YES probability in cents, for the fair-value strategy",
     )
+    swing_series: str = Field(
+        default="",
+        description="Comma-separated series for the swing trader; falls back to the arb targets when empty",
+    )
+    swing_drop_cents: int = Field(
+        default=10, ge=2, le=50,
+        description="Ask must fall this much within the lookback window to trigger a dip buy",
+    )
+    swing_take_profit_cents: int = Field(
+        default=5, ge=1, le=50,
+        description="Sell a swing position once the bid recovers this far above entry",
+    )
+    swing_stop_loss_cents: int = Field(
+        default=8, ge=1, le=50,
+        description="Sell a swing position once the bid falls this far below entry",
+    )
+    swing_max_hold_minutes: int = Field(
+        default=30, ge=1, le=1440,
+        description="Time-exit: sell a swing position after holding this long",
+    )
+    swing_max_positions: int = Field(
+        default=3, ge=1, le=50,
+        description="Maximum concurrent swing positions",
+    )
 
     def update(self, patch: dict) -> "BotSettings":
         data = self.model_dump()

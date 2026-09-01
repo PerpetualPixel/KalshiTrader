@@ -20,6 +20,7 @@ from .strategies import (
     SignalWatcherStrategy,
     Strategy,
     StrategyContext,
+    SwingTraderStrategy,
 )
 from .strategies.base import OrderIntent
 
@@ -41,7 +42,12 @@ class BotEngine:
 
         self.strategies: dict[str, Strategy] = {
             s.name: s
-            for s in (ArbitrageStrategy(), FairValueStrategy(), SignalWatcherStrategy())
+            for s in (
+                ArbitrageStrategy(),
+                FairValueStrategy(),
+                SwingTraderStrategy(),
+                SignalWatcherStrategy(),
+            )
         }
         # per-strategy state: stopped | running | paused
         self.strategy_state: dict[str, str] = {n: "stopped" for n in self.strategies}
@@ -219,7 +225,9 @@ class BotEngine:
             await self.log(f"could not compute working capital, skipping order: {exc}", "error")
             return
 
-        decision = self.risk.check_order(intent.count, intent.price_cents, working)
+        decision = self.risk.check_order(
+            intent.count, intent.price_cents, working, action=intent.action
+        )
         if not decision.allowed:
             await self.log(f"RISK BLOCK [{intent.ticker}]: {decision.reason}", "warn", "risk")
             return

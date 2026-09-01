@@ -176,6 +176,24 @@
           <label class="wide">Fair Values (JSON: {"TICKER": 62})
             <textarea name="fair_values" rows="2" placeholder='{"SOME-TICKER": 62}'></textarea>
           </label>
+          <label class="wide">Swing Series (comma-separated; empty = same as Target Series)
+            <input type="text" name="swing_series" placeholder="KXATPMATCH, KXWTAMATCH, KXMLBGAME" />
+          </label>
+          <label>Swing: Dip to Buy (cents)
+            <input type="number" name="swing_drop_cents" min="2" max="50" />
+          </label>
+          <label>Swing: Take Profit (cents)
+            <input type="number" name="swing_take_profit_cents" min="1" max="50" />
+          </label>
+          <label>Swing: Stop Loss (cents)
+            <input type="number" name="swing_stop_loss_cents" min="1" max="50" />
+          </label>
+          <label>Swing: Max Hold (minutes)
+            <input type="number" name="swing_max_hold_minutes" min="1" max="1440" />
+          </label>
+          <label>Swing: Max Open Positions
+            <input type="number" name="swing_max_positions" min="1" max="50" />
+          </label>
           <div class="wide">
             <button type="submit" class="btn primary">Save Settings</button>
             <span id="settings-status"></span>
