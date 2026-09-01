@@ -199,7 +199,7 @@ main { padding: 1rem 1.2rem; max-width: 1500px; margin: 0 auto; }
 h2 .hint { color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: normal; }
 
 /* Tables */
-.table-wrap { overflow-x: auto; max-height: 300px; overflow-y: auto; }
+.table-wrap { overflow-x: auto; max-height: 500px; overflow-y: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
 th, td { text-align: left; padding: 0.35rem 0.5rem; white-space: nowrap; }
 th { color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
