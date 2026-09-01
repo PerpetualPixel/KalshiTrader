@@ -188,11 +188,12 @@ class KalshiClient:
             "/portfolio/intra_exchange_instance_transfer",
             json={
                 "amount": amount_cents,
-                # Regular trading accounts are "event_contract" instances
-                # ("margined" is Kalshi's margin product).
-                "source_exchange_instance": "event_contract",
+                # source/destination are exchange-instance types; regular
+                # trading accounts are "event_contract" ("margined" is
+                # Kalshi's margin product). Shard indexes route within them.
+                "source": "event_contract",
+                "destination": "event_contract",
                 "source_exchange_shard": source_shard,
-                "destination_exchange_instance": "event_contract",
                 "destination_exchange_shard": destination_shard,
             },
         )
