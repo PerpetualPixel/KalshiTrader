@@ -41,11 +41,20 @@ function showLogin() {
 async function checkAuth() {
   const status = await fetch("/api/auth/status").then((r) => r.json());
   setupMode = status.setup_required;
+  // On setup the PIN box is optional; afterwards it appears only when one
+  // has actually been configured, so the login form matches the account.
+  $("#login-pin").hidden = !(setupMode || status.pin_required);
+  $("#login-pin").required = status.pin_required && !setupMode;
   if (setupMode) {
     $("#login-subtitle").textContent = "First run — create a dashboard password (min 8 characters)";
     $("#login-password2").hidden = false;
+    $("#login-pin").placeholder = "PIN (optional, 4-12 digits)";
     $("#login-password").autocomplete = "new-password";
     $("#login-submit").textContent = "Create Password";
+  }
+  if (status.locked_out_seconds > 0) {
+    $("#login-error").textContent =
+      `too many failed attempts — locked out for ${status.locked_out_seconds}s`;
   }
   if (!status.authenticated || setupMode) {
     showLogin();
@@ -68,7 +77,7 @@ $("#login-form").addEventListener("submit", async (e) => {
     const resp = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, pin: $("#login-pin").value || null }),
     });
     if (!resp.ok) {
       const body = await resp.json().catch(() => ({}));
@@ -78,6 +87,32 @@ $("#login-form").addEventListener("submit", async (e) => {
     await boot();
   } catch (err) {
     errEl.textContent = err.message;
+  }
+});
+
+$("#pin-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const resEl = $("#pin-result");
+  resEl.textContent = "saving…";
+  try {
+    const resp = await fetch("/api/auth/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        password: form.password.value,
+        pin: form.pin.value.trim(),
+      }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(body.detail || resp.statusText);
+    // Changing the second factor rotates the session secret server-side, so
+    // this session is now invalid by design — send them back to the login.
+    resEl.textContent = body.pin_required ? "PIN set — log in again" : "PIN removed — log in again";
+    form.reset();
+    setTimeout(() => location.reload(), 1200);
+  } catch (err) {
+    resEl.textContent = err.message;
   }
 });
 
@@ -364,6 +399,7 @@ async function loadSettings() {
   form.swing_series.value = s.swing_series;
   form.swing_drop_cents.value = s.swing_drop_cents;
   form.swing_lookback_seconds.value = s.swing_lookback_seconds;
+  form.swing_min_volume.value = s.swing_min_volume;
   form.swing_max_spread_cents.value = s.swing_max_spread_cents;
   form.swing_price_band_low.value = s.swing_price_band_low;
   form.swing_price_band_high.value = s.swing_price_band_high;
@@ -372,6 +408,7 @@ async function loadSettings() {
   form.swing_max_hold_minutes.value = s.swing_max_hold_minutes;
   form.swing_max_positions.value = s.swing_max_positions;
 }
+
 
 $("#settings-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -401,6 +438,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     swing_series: form.swing_series.value,
     swing_drop_cents: parseInt(form.swing_drop_cents.value),
     swing_lookback_seconds: parseInt(form.swing_lookback_seconds.value),
+    swing_min_volume: parseInt(form.swing_min_volume.value),
     swing_max_spread_cents: parseInt(form.swing_max_spread_cents.value),
     swing_price_band_low: parseInt(form.swing_price_band_low.value),
     swing_price_band_high: parseInt(form.swing_price_band_high.value),
@@ -538,6 +576,14 @@ async function boot() {
     }
     return;
   }
+  fetch("/api/auth/status")
+    .then((r) => r.json())
+    .then((s) => {
+      $("#pin-status").textContent = s.pin_required
+        ? "PIN is enabled — both password and PIN are required to log in."
+        : "No PIN set. A PIN adds a second factor before this dashboard can trade.";
+    })
+    .catch(() => {});
   connectWs();
   setInterval(() => {
     refreshOrders().catch(() => {});

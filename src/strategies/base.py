@@ -72,6 +72,21 @@ def market_prices(market: dict[str, Any]) -> dict[str, int | None]:
     return {"yes_bid": yes_bid, "yes_ask": yes_ask, "no_bid": no_bid, "no_ask": no_ask}
 
 
+def market_volume(market: dict[str, Any]) -> int | None:
+    """Contracts traded on a market, or None when Kalshi didn't say.
+
+    Used to tell a live match from one that merely has an open market: the
+    /markets list carries a volume figure, and the field name has moved
+    between API versions, so take the most specific one present rather than
+    assuming. None means unknown, which callers must not treat as zero.
+    """
+    for key in ("volume_24h", "volume"):
+        value = market.get(key)
+        if isinstance(value, int) and value >= 0:
+            return value
+    return None
+
+
 async def gather_target_markets(
     ctx: StrategyContext, series_csv: str, tickers_csv: str
 ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:

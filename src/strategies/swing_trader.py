@@ -40,6 +40,7 @@ from .base import (
     StrategyContext,
     gather_target_markets,
     market_prices,
+    market_volume,
 )
 
 LOOKBACK_SECONDS = 300  # default window for "how far did it just fall"
@@ -114,25 +115,51 @@ class SwingTraderStrategy(Strategy):
             markets, per_series = await gather_target_markets(
                 ctx, ctx.settings.arb_series, ctx.settings.arb_tickers
             )
-        await self._report_coverage(ctx, per_series, len(markets))
+        markets, skipped = self._drop_inert(markets, ctx.settings.swing_min_volume)
+        await self._report_coverage(ctx, per_series, len(markets), skipped)
         return markets
 
+    @staticmethod
+    def _drop_inert(
+        markets: dict[str, dict[str, Any]], min_volume: int
+    ) -> tuple[dict[str, dict[str, Any]], int]:
+        """Drop markets that have barely traded.
+
+        Kalshi lists a match starting tomorrow as an open market, and this
+        strategy hunts in-game momentum, so watching those is pure noise: an
+        untraded book does not move and can never show a dip. Markets whose
+        volume Kalshi didn't report are kept — unknown is not zero.
+        """
+        if min_volume <= 0:
+            return markets, 0
+        kept = {}
+        for ticker, market in markets.items():
+            volume = market_volume(market)
+            if volume is None or volume >= min_volume:
+                kept[ticker] = market
+        return kept, len(markets) - len(kept)
+
     async def _report_coverage(
-        self, ctx: StrategyContext, per_series: dict[str, int], total: int
+        self,
+        ctx: StrategyContext,
+        per_series: dict[str, int],
+        total: int,
+        skipped: int = 0,
     ) -> None:
         """Log what the scan actually watches — but only when the picture
         changes, so the activity stream isn't spammed every cycle. A series
         that resolves to zero open markets is either between games or a
         ticker that doesn't exist on Kalshi; call those out explicitly."""
-        snapshot = (total, tuple(sorted(per_series.items())))
+        snapshot = (total, skipped, tuple(sorted(per_series.items())))
         if snapshot == self._last_coverage:
             return
         self._last_coverage = snapshot
         empty = sorted(s for s, n in per_series.items() if n == 0)
         active = {s: n for s, n in per_series.items() if n > 0}
         summary = ", ".join(f"{s}:{n}" for s, n in sorted(active.items())) or "none"
+        quiet = f" (skipped {skipped} below the volume floor)" if skipped else ""
         await ctx.log(
-            f"watching {total} open market(s) — {summary}",
+            f"watching {total} open market(s){quiet} — {summary}",
             "info" if total else "warn",
         )
         if empty:
@@ -154,6 +181,20 @@ class SwingTraderStrategy(Strategy):
         hist.append((now, ask))
         while hist and now - hist[0][0] > lookback * 2:
             hist.popleft()
+
+    def _moving_sides(self, now: float, lookback: float) -> int:
+        """Tracked sides whose ask changed at all inside the lookback.
+
+        The distinction that matters when nothing trades: a scan watching 400
+        sides of which 0 moved is not a threshold problem, it is watching
+        markets where no game is being played.
+        """
+        moving = 0
+        for hist in self.ask_history.values():
+            asks = {ask for ts, ask in hist if now - ts <= lookback}
+            if len(asks) > 1:
+                moving += 1
+        return moving
 
     def on_order_result(self, intent: OrderIntent, ok: bool) -> None:
         """The engine's verdict on an intent this strategy returned.
@@ -318,16 +359,18 @@ class SwingTraderStrategy(Strategy):
                 }
                 open_slots -= 1
 
+        moving = self._moving_sides(now, lookback)
         self._last_scan = {
             "at": now,
             "markets": len(markets),
             "sides_priced": sides_seen,
+            "sides_moving": moving,
             "skips": dict(skips),
             "best_candidate_drop_cents": best[0] if best else None,
             "best_candidate": best[1] if best else None,
             "intents": len(intents),
         }
-        await self._report_scan(ctx, settings, skips, best, sides_seen)
+        await self._report_scan(ctx, settings, skips, best, sides_seen, moving)
         return intents
 
     async def _report_scan(
@@ -337,6 +380,7 @@ class SwingTraderStrategy(Strategy):
         skips: dict[str, int],
         best: tuple[int, str] | None,
         sides_seen: int,
+        moving: int,
     ) -> None:
         """One line naming the binding gate, logged only while the strategy is
         idle — enough to tell 'no dips yet' apart from 'every book is too wide
@@ -347,7 +391,13 @@ class SwingTraderStrategy(Strategy):
             f"{SKIP_LABELS.get(r, r)}: {n}"
             for r, n in sorted(skips.items(), key=lambda kv: -kv[1])
         )
-        if best is not None:
+        if moving == 0:
+            closest = (
+                "no ask moved at all in the window — these books are idle, "
+                "which is what an open market for a match that hasn't started "
+                "looks like; raise swing_min_volume to skip them"
+            )
+        elif best is not None:
             closest = (
                 f"best candidate {best[1]} fell {best[0]}c "
                 f"(need {settings.swing_drop_cents}c)"
@@ -359,4 +409,7 @@ class SwingTraderStrategy(Strategy):
                 f"or the price band (now {settings.swing_price_band_low}-"
                 f"{settings.swing_price_band_high}c)"
             )
-        await ctx.log(f"no entry from {sides_seen} side(s) — {tally}; {closest}", "scan")
+        await ctx.log(
+            f"no entry from {sides_seen} side(s), {moving} moving — {tally}; {closest}",
+            "scan",
+        )

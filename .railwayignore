@@ -1,0 +1,11 @@
+.git
+.github
+.gitignore
+.env.local
+.vscode
+__pycache__
+*.pyc
+.pytest_cache
+node_modules
+dashboard/.next
+.DS_Store

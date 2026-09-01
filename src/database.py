@@ -162,6 +162,13 @@ class Database:
                 row.value = value
             s.commit()
 
+    def delete_kv(self, key: str) -> None:
+        with self.session() as s:
+            row = s.get(SettingsRow, key)
+            if row is not None:
+                s.delete(row)
+                s.commit()
+
     # ── Writes ────────────────────────────────────────────────────────
 
     def log_activity(self, message: str, level: str = "info", source: str = "system") -> ActivityLog:
@@ -235,6 +242,21 @@ class Database:
                 }
                 for r in rows
             ]
+
+    def get_order_by_id(self, order_id: str) -> dict[str, Any] | None:
+        with self.session() as s:
+            row = s.execute(select(OrderRecord).where(OrderRecord.order_id == order_id)).scalar()
+            if not row:
+                return None
+            return {
+                "strategy": row.strategy,
+                "order_id": row.order_id,
+                "ticker": row.ticker,
+                "side": row.side,
+                "action": row.action,
+                "count": row.count,
+                "price_cents": row.price_cents,
+            }
 
     def recent_fills(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.session() as s:

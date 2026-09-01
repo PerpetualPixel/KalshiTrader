@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,21 @@ async def require_login(request: Request, call_next):
 
 class PasswordBody(BaseModel):
     password: str
+    pin: str | None = None
+
+
+class PinBody(BaseModel):
+    """Set, change, or (with an empty pin) remove the second factor."""
+
+    password: str
+    pin: str = ""
+
+
+# Reaching the dashboard over anything but localhost means the cookie should
+# never travel in the clear. It defaults off because the documented setup is
+# http://127.0.0.1, where a secure cookie would simply be dropped and lock
+# you out; set COOKIE_SECURE=true whenever the dashboard is served over TLS.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _set_session_cookie(response: Response) -> None:
@@ -68,8 +84,20 @@ def _set_session_cookie(response: Response) -> None:
         auth.issue_token(),
         httponly=True,
         samesite="lax",
+        secure=COOKIE_SECURE,
         max_age=7 * 24 * 3600,
     )
+
+
+def _guard_lockout() -> None:
+    """Refuse a login attempt while the throttle window is open."""
+    remaining = auth.lockout_remaining()
+    if remaining:
+        raise HTTPException(
+            429,
+            f"too many failed attempts — try again in {remaining}s",
+            headers={"Retry-After": str(remaining)},
+        )
 
 
 @app.get("/api/auth/status")
@@ -77,6 +105,8 @@ async def auth_status(request: Request) -> dict[str, Any]:
     return {
         "setup_required": not auth.is_configured(),
         "authenticated": auth.verify_token(request.cookies.get(COOKIE_NAME)),
+        "pin_required": auth.has_pin(),
+        "locked_out_seconds": auth.lockout_remaining(),
     }
 
 
@@ -86,9 +116,14 @@ async def auth_setup(body: PasswordBody, response: Response) -> dict[str, Any]:
         raise HTTPException(409, "password already set — log in instead")
     try:
         auth.set_password(body.password)
+        if body.pin:
+            auth.set_pin(body.pin)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    db.record_audit("auth_password_created", {}, actor="dashboard")
+    db.record_audit(
+        "auth_password_created", {"pin_set": bool(body.pin)}, actor="dashboard"
+    )
+    auth.register_success()
     _set_session_cookie(response)
     return {"ok": True}
 
@@ -97,10 +132,36 @@ async def auth_setup(body: PasswordBody, response: Response) -> dict[str, Any]:
 async def auth_login(body: PasswordBody, response: Response) -> dict[str, Any]:
     if not auth.is_configured():
         raise HTTPException(409, "no password set — run setup first")
-    if not auth.verify_password(body.password):
-        raise HTTPException(401, "incorrect password")
+    _guard_lockout()
+    if not auth.verify_credentials(body.password, body.pin):
+        auth.register_failure()
+        db.record_audit("auth_login_failed", {}, actor="dashboard")
+        # Deliberately does not say which factor was wrong.
+        raise HTTPException(401, "incorrect password or PIN")
+    auth.register_success()
     _set_session_cookie(response)
     return {"ok": True}
+
+
+@app.post("/api/auth/pin")
+async def auth_set_pin(body: PinBody) -> dict[str, Any]:
+    """Set, change, or clear the PIN. Requires the current password, so a
+    borrowed session alone cannot weaken the second factor."""
+    _guard_lockout()
+    if not auth.verify_password(body.password):
+        auth.register_failure()
+        raise HTTPException(401, "incorrect password")
+    auth.register_success()
+    try:
+        if body.pin:
+            auth.set_pin(body.pin)
+        else:
+            auth.clear_pin()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    auth.revoke_all_sessions()  # force a re-login under the new factor
+    db.record_audit("auth_pin_changed", {"enabled": bool(body.pin)}, actor="dashboard")
+    return {"ok": True, "pin_required": auth.has_pin()}
 
 
 @app.post("/api/auth/logout")
@@ -242,6 +303,7 @@ class SettingsPatch(BaseModel):
     swing_series: str | None = None
     swing_drop_cents: int | None = None
     swing_lookback_seconds: int | None = None
+    swing_min_volume: int | None = None
     swing_max_spread_cents: int | None = None
     swing_price_band_low: int | None = None
     swing_price_band_high: int | None = None
@@ -252,9 +314,10 @@ class SettingsPatch(BaseModel):
     confirm_live: bool = False
 
     # A settings key the dashboard sends but this model forgets is dropped
-    # silently by pydantic, which is how the swing trader ran for weeks on
-    # default settings that could not be changed. Reject unknown keys loudly
-    # instead, so the next missing field is a 422 rather than a mystery.
+    # silently by pydantic, so the setting simply never takes effect — that
+    # is how the swing fields came to be missing here in the first place.
+    # Reject unknown keys loudly instead, so the next field that goes missing
+    # is a 422 rather than a mystery.
     model_config = {"extra": "forbid"}
 
 
@@ -327,11 +390,30 @@ async def debug_balance() -> dict[str, Any]:
 @app.get("/api/debug/swing")
 async def debug_swing() -> dict[str, Any]:
     """What the swing trader is tracking and why its last scan did or didn't
-    fire — the per-gate skip tally plus the closest candidate it saw."""
+    fire — the gate settings, the per-gate skip tally, the closest candidate
+    it saw, and the positions actually held on Kalshi."""
     strategy = engine.strategies.get("swing")
     if strategy is None or not hasattr(strategy, "debug_state"):
         raise HTTPException(404, "swing strategy not available")
     settings = engine.settings
+
+    # Live positions are useful here but must not make the endpoint useless
+    # when the client is down — that is exactly when it gets consulted.
+    positions_held: dict[str, int] = {}
+    positions_error: str | None = None
+    if engine.client is None:
+        positions_error = engine.client_error or "API client not ready"
+    else:
+        try:
+            raw = await engine.client.get_positions()
+            positions_held = {
+                str(p.get("ticker", "")): int(p.get("position", 0) or 0)
+                for p in raw.get("market_positions", [])
+                if int(p.get("position", 0) or 0) != 0
+            }
+        except Exception as exc:  # noqa: BLE001 — diagnostics must still render
+            positions_error = str(exc)
+
     return {
         "state": engine.strategy_state.get("swing"),
         "targets": settings.swing_series or f"(fallback) {settings.arb_series}",
@@ -344,7 +426,10 @@ async def debug_swing() -> dict[str, Any]:
                 settings.swing_price_band_high,
             ],
             "max_positions": settings.swing_max_positions,
+            "min_volume": settings.swing_min_volume,
         },
+        "positions_held": positions_held,
+        "positions_error": positions_error,
         **strategy.debug_state(),
     }
 
