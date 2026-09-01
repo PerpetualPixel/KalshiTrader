@@ -209,26 +209,26 @@ class SwingTraderStrategy(Strategy):
                 if not PRICE_BAND[0] <= ask <= PRICE_BAND[1]:
                     await ctx.log(
                         f"SWING {ticker} {side}: ask {ask}c outside PRICE_BAND {PRICE_BAND}",
-                        "debug",
+                        "info",
                     )
                     continue
                 if bid is None:
                     await ctx.log(
                         f"SWING {ticker} {side}: no bid data",
-                        "debug",
+                        "info",
                     )
                     continue
                 if ask - bid > MAX_SPREAD_CENTS:
                     spread = ask - bid
                     await ctx.log(
                         f"SWING {ticker} {side}: spread {spread}c > MAX_SPREAD_CENTS {MAX_SPREAD_CENTS}",
-                        "debug",
+                        "info",
                     )
                     continue
                 if drop < settings.swing_drop_cents:
                     await ctx.log(
                         f"SWING {ticker} {side}: drop {drop}c < threshold {settings.swing_drop_cents}c",
-                        "debug",
+                        "info",
                     )
                     continue
                 count = settings.contracts_per_side
