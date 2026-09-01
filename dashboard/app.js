@@ -4,9 +4,13 @@
 const $ = (sel) => document.querySelector(sel);
 const fmtUsd = (cents) =>
   cents == null ? "—" : (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
-const fmtTime = (iso) => new Date(iso).toLocaleTimeString();
+// Server timestamps are UTC but arrive without a timezone marker; tag them
+// as UTC so they render in the viewer's local time.
+const parseTs = (iso) =>
+  new Date(typeof iso === "string" && !/(Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso + "Z" : iso);
+const fmtTime = (iso) => parseTs(iso).toLocaleTimeString();
 const fmtDateTime = (iso) => {
-  const d = new Date(iso);
+  const d = parseTs(iso);
   return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toLocaleTimeString()}`;
 };
 
