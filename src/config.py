@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 load_dotenv()
 
@@ -116,8 +116,24 @@ class BotSettings(BaseModel):
         description="Comma-separated series for the swing trader; falls back to the arb targets when empty",
     )
     swing_drop_cents: int = Field(
-        default=10, ge=2, le=50,
+        default=5, ge=2, le=50,
         description="Ask must fall this much within the lookback window to trigger a dip buy",
+    )
+    swing_lookback_seconds: int = Field(
+        default=300, ge=30, le=3600,
+        description="Window the ask's recent high is measured over when sizing a dip",
+    )
+    swing_max_spread_cents: int = Field(
+        default=8, ge=1, le=50,
+        description="Liquidity guard: skip markets whose bid/ask spread is wider than this",
+    )
+    swing_price_band_low: int = Field(
+        default=15, ge=1, le=99,
+        description="Don't buy dips at or below this price (lost causes)",
+    )
+    swing_price_band_high: int = Field(
+        default=85, ge=1, le=99,
+        description="Don't buy dips at or above this price (near-certainties)",
     )
     swing_take_profit_cents: int = Field(
         default=5, ge=1, le=50,
@@ -135,6 +151,14 @@ class BotSettings(BaseModel):
         default=3, ge=1, le=50,
         description="Maximum concurrent swing positions",
     )
+
+    @model_validator(mode="after")
+    def _check_price_band(self) -> "BotSettings":
+        if self.swing_price_band_low >= self.swing_price_band_high:
+            raise ValueError(
+                "swing_price_band_low must be below swing_price_band_high"
+            )
+        return self
 
     def update(self, patch: dict) -> "BotSettings":
         data = self.model_dump()

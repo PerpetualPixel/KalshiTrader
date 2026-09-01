@@ -239,7 +239,23 @@ class SettingsPatch(BaseModel):
     arb_tickers: str | None = None
     arb_series: str | None = None
     fair_values: dict[str, int] | None = None
+    swing_series: str | None = None
+    swing_drop_cents: int | None = None
+    swing_lookback_seconds: int | None = None
+    swing_max_spread_cents: int | None = None
+    swing_price_band_low: int | None = None
+    swing_price_band_high: int | None = None
+    swing_take_profit_cents: int | None = None
+    swing_stop_loss_cents: int | None = None
+    swing_max_hold_minutes: int | None = None
+    swing_max_positions: int | None = None
     confirm_live: bool = False
+
+    # A settings key the dashboard sends but this model forgets is dropped
+    # silently by pydantic, which is how the swing trader ran for weeks on
+    # default settings that could not be changed. Reject unknown keys loudly
+    # instead, so the next missing field is a 422 rather than a mystery.
+    model_config = {"extra": "forbid"}
 
 
 @app.get("/api/settings")
@@ -306,6 +322,31 @@ async def debug_balance() -> dict[str, Any]:
     if engine.client is None:
         raise HTTPException(503, engine.client_error or "API client not ready")
     return await engine.client.get_balance_raw()
+
+
+@app.get("/api/debug/swing")
+async def debug_swing() -> dict[str, Any]:
+    """What the swing trader is tracking and why its last scan did or didn't
+    fire — the per-gate skip tally plus the closest candidate it saw."""
+    strategy = engine.strategies.get("swing")
+    if strategy is None or not hasattr(strategy, "debug_state"):
+        raise HTTPException(404, "swing strategy not available")
+    settings = engine.settings
+    return {
+        "state": engine.strategy_state.get("swing"),
+        "targets": settings.swing_series or f"(fallback) {settings.arb_series}",
+        "gates": {
+            "drop_cents": settings.swing_drop_cents,
+            "lookback_seconds": settings.swing_lookback_seconds,
+            "max_spread_cents": settings.swing_max_spread_cents,
+            "price_band": [
+                settings.swing_price_band_low,
+                settings.swing_price_band_high,
+            ],
+            "max_positions": settings.swing_max_positions,
+        },
+        **strategy.debug_state(),
+    }
 
 
 class ManualOrderBody(BaseModel):
