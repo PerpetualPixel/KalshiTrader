@@ -169,6 +169,10 @@ class KalshiClient:
             "price": f"{yes_price_cents / 100:.2f}",
             "time_in_force": "good_till_canceled",
             "self_trade_prevention_type": "taker_at_cross",
+            # Kalshi shards trading across matching engines; -1 auto-routes
+            # to the right shard for this ticker (a fixed default of 0 fails
+            # with user_not_found for markets living on other shards).
+            "exchange_index": -1,
         }
         data = await self._request("POST", "/portfolio/events/orders", json=body)
         return data.get("order", data)
