@@ -192,7 +192,8 @@ class BotEngine:
                         await self.log(f"{name}: scanning…", "scan", source=name)
                         intents = await strategy.scan_once(ctx)
                         for intent in intents:
-                            await self._submit(name, intent)
+                            ok = await self._submit(name, intent)
+                            strategy.on_order_result(intent, ok)
             except asyncio.CancelledError:
                 raise
             except KalshiAPIError as exc:
@@ -218,20 +219,22 @@ class BotEngine:
             total += abs(int(p.get("market_exposure", 0)))
         return total
 
-    async def _submit(self, strategy_name: str, intent: OrderIntent) -> None:
+    async def _submit(self, strategy_name: str, intent: OrderIntent) -> bool:
+        """Risk-check and place one intent. Returns whether it reached Kalshi,
+        so a strategy can release state it reserved for a rejected order."""
         assert self.client is not None
         try:
             working = await self._money_working_cents()
         except KalshiAPIError as exc:
             await self.log(f"could not compute working capital, skipping order: {exc}", "error")
-            return
+            return False
 
         decision = self.risk.check_order(
             intent.count, intent.price_cents, working, action=intent.action
         )
         if not decision.allowed:
             await self.log(f"RISK BLOCK [{intent.ticker}]: {decision.reason}", "warn", "risk")
-            return
+            return False
 
         client_order_id = str(uuid.uuid4())
         expiration_ts = int(time.time()) + self.settings.order_ttl_seconds
@@ -245,7 +248,7 @@ class BotEngine:
                 f"{intent.side}@{intent.price_cents}c]: {exc}",
                 "error", strategy_name,
             )
-            return
+            return False
 
         self.db.record_order(
             strategy=strategy_name,
@@ -283,6 +286,7 @@ class BotEngine:
             )
             self._ttl_tasks.add(task)
             task.add_done_callback(self._ttl_tasks.discard)
+        return True
 
     async def _place_with_shard_funding(
         self, intent: OrderIntent, client_order_id: str, expiration_ts: int

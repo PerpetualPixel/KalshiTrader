@@ -363,6 +363,10 @@ async function loadSettings() {
   form.fair_values.value = JSON.stringify(s.fair_values);
   form.swing_series.value = s.swing_series;
   form.swing_drop_cents.value = s.swing_drop_cents;
+  form.swing_lookback_seconds.value = s.swing_lookback_seconds;
+  form.swing_max_spread_cents.value = s.swing_max_spread_cents;
+  form.swing_price_band_low.value = s.swing_price_band_low;
+  form.swing_price_band_high.value = s.swing_price_band_high;
   form.swing_take_profit_cents.value = s.swing_take_profit_cents;
   form.swing_stop_loss_cents.value = s.swing_stop_loss_cents;
   form.swing_max_hold_minutes.value = s.swing_max_hold_minutes;
@@ -396,6 +400,10 @@ $("#settings-form").addEventListener("submit", async (e) => {
     fair_values: fairValues,
     swing_series: form.swing_series.value,
     swing_drop_cents: parseInt(form.swing_drop_cents.value),
+    swing_lookback_seconds: parseInt(form.swing_lookback_seconds.value),
+    swing_max_spread_cents: parseInt(form.swing_max_spread_cents.value),
+    swing_price_band_low: parseInt(form.swing_price_band_low.value),
+    swing_price_band_high: parseInt(form.swing_price_band_high.value),
     swing_take_profit_cents: parseInt(form.swing_take_profit_cents.value),
     swing_stop_loss_cents: parseInt(form.swing_stop_loss_cents.value),
     swing_max_hold_minutes: parseInt(form.swing_max_hold_minutes.value),

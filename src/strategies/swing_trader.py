@@ -12,8 +12,14 @@ scan instead of one orderbook call per market.
 
 Entry (per ticker, per side):
     drop = max(ask over lookback window) - current ask
-    buy when drop >= swing_drop_cents, price is inside PRICE_BAND, and the
-    bid/ask spread is at most MAX_SPREAD_CENTS (liquidity guard).
+    buy when drop >= swing_drop_cents, price is inside the configured price
+    band, and the bid/ask spread is at most swing_max_spread_cents.
+
+Every gate is a setting rather than a constant, because which one is binding
+is not knowable in advance — it depends on the series being watched. When a
+scan finds no dip, the strategy says which gate rejected how many sides and
+how close the best candidate came, so the thresholds can be tuned from
+evidence instead of guesswork.
 
 Exit (positions this strategy entered, verified against the live positions
 endpoint so unfilled orders age out on their own):
@@ -36,15 +42,31 @@ from .base import (
     market_prices,
 )
 
-LOOKBACK_SECONDS = 300  # window for "how far did it just fall"
-PRICE_BAND = (15, 85)  # don't buy near-certainties or lost causes
-MAX_SPREAD_CENTS = 6  # skip illiquid books where the spread eats the swing
+LOOKBACK_SECONDS = 300  # default window for "how far did it just fall"
 FILL_GRACE_SECONDS = 30  # after order TTL + this, an unfilled entry is dropped
 
+# Why a side was passed over, in the order the gates are applied. Reported as
+# a per-scan tally so a strategy that never fires can be diagnosed from the
+# activity log alone.
+SKIP_LABELS = {
+    "no_ask": "no ask quoted",
+    "held": "already in this position",
+    "no_slots": "position limit reached",
+    "band": "price outside band",
+    "no_bid": "no bid quoted",
+    "spread": "spread too wide",
+    "drop": "dip too small",
+}
 
-def swing_drop(history: list[tuple[float, int]], now: float, current_ask: int) -> int:
+
+def swing_drop(
+    history: list[tuple[float, int]],
+    now: float,
+    current_ask: int,
+    lookback_seconds: float = LOOKBACK_SECONDS,
+) -> int:
     """How far the ask has fallen from its recent high inside the lookback."""
-    past = [ask for ts, ask in history if now - ts <= LOOKBACK_SECONDS]
+    past = [ask for ts, ask in history if now - ts <= lookback_seconds]
     if not past:
         return 0
     return max(past) - current_ask
@@ -76,9 +98,12 @@ class SwingTraderStrategy(Strategy):
     def __init__(self) -> None:
         # (ticker, side) -> deque of (timestamp, ask)
         self.ask_history: dict[tuple[str, str], deque] = {}
-        # (ticker, side) -> {"price", "count", "ts"} for entries we ordered
+        # (ticker, side) -> {"price", "count", "ts", "confirmed"} for entries
+        # we ordered. An entry is provisional until the engine reports the
+        # order was accepted; see `on_order_result`.
         self.entries: dict[tuple[str, str], dict[str, Any]] = {}
         self._last_coverage: tuple | None = None
+        self._last_scan: dict[str, Any] = {}
 
     async def _targets(self, ctx: StrategyContext) -> dict[str, dict[str, Any]]:
         if ctx.settings.swing_series.strip():
@@ -122,11 +147,53 @@ class SwingTraderStrategy(Strategy):
         signed = positions.get(ticker, 0)
         return max(signed, 0) if side == "yes" else max(-signed, 0)
 
-    def _note_ask(self, key: tuple[str, str], now: float, ask: int) -> None:
+    def _note_ask(
+        self, key: tuple[str, str], now: float, ask: int, lookback: float
+    ) -> None:
         hist = self.ask_history.setdefault(key, deque())
         hist.append((now, ask))
-        while hist and now - hist[0][0] > LOOKBACK_SECONDS * 2:
+        while hist and now - hist[0][0] > lookback * 2:
             hist.popleft()
+
+    def on_order_result(self, intent: OrderIntent, ok: bool) -> None:
+        """The engine's verdict on an intent this strategy returned.
+
+        An entry slot is reserved when the dip is spotted, but a rejected or
+        risk-blocked order must not hold that slot: without this the strategy
+        would count phantom positions against `swing_max_positions` and stop
+        entering entirely after a few rejections.
+        """
+        if intent.action != "buy":
+            return
+        key = (intent.ticker, intent.side)
+        entry = self.entries.get(key)
+        if entry is None:
+            return
+        if ok:
+            entry["confirmed"] = True
+        else:
+            del self.entries[key]
+
+    def debug_state(self) -> dict[str, Any]:
+        """State behind /api/debug/swing — what is tracked, held, and why the
+        last scan did or didn't fire."""
+        now = time.time()
+        return {
+            "tracking": {
+                f"{t}:{s}": {
+                    "samples": len(hist),
+                    "current_ask": hist[-1][1] if hist else None,
+                    "window_high": max((a for _ts, a in hist), default=None),
+                    "age_seconds": round(now - hist[0][0], 1) if hist else 0.0,
+                }
+                for (t, s), hist in sorted(self.ask_history.items())
+            },
+            "entries": {
+                f"{t}:{s}": {**entry, "age_seconds": round(now - entry["ts"], 1)}
+                for (t, s), entry in sorted(self.entries.items())
+            },
+            "last_scan": self._last_scan,
+        }
 
     async def _side_prices(
         self, ctx: StrategyContext, markets: dict[str, dict], ticker: str, side: str
@@ -149,6 +216,8 @@ class SwingTraderStrategy(Strategy):
         now = time.time()
         settings = ctx.settings
         max_hold_seconds = settings.swing_max_hold_minutes * 60.0
+        lookback = float(settings.swing_lookback_seconds)
+        band = (settings.swing_price_band_low, settings.swing_price_band_high)
 
         markets = await self._targets(ctx)
         positions_raw = await ctx.client.get_positions()
@@ -192,32 +261,102 @@ class SwingTraderStrategy(Strategy):
 
         # ── Entries: hunt for fresh dips ──────────────────────────────
         open_slots = settings.swing_max_positions - len(self.entries)
+        skips: dict[str, int] = {}
+        best: tuple[int, str] | None = None  # (drop, "TICKER side @ask")
+        sides_seen = 0
+
+        def skip(reason: str) -> None:
+            skips[reason] = skips.get(reason, 0) + 1
+
         for ticker, market in markets.items():
             prices = market_prices(market)
             for side in ("yes", "no"):
                 ask = prices[f"{side}_ask"]
                 bid = prices[f"{side}_bid"]
                 if ask is None:
+                    skip("no_ask")
                     continue
+                sides_seen += 1
                 key = (ticker, side)
-                drop = swing_drop(list(self.ask_history.get(key, ())), now, ask)
-                self._note_ask(key, now, ask)
-                if key in self.entries or open_slots <= 0:
+                drop = swing_drop(
+                    list(self.ask_history.get(key, ())), now, ask, lookback
+                )
+                self._note_ask(key, now, ask, lookback)
+                if key in self.entries:
+                    skip("held")
                     continue
-                if not PRICE_BAND[0] <= ask <= PRICE_BAND[1]:
+                if open_slots <= 0:
+                    skip("no_slots")
                     continue
-                if bid is None or ask - bid > MAX_SPREAD_CENTS:
+                if not band[0] <= ask <= band[1]:
+                    skip("band")
                     continue
-                if drop >= settings.swing_drop_cents:
-                    count = settings.contracts_per_side
-                    await ctx.log(
-                        f"SWING DIP {ticker} {side}: ask fell {drop}c in "
-                        f"{LOOKBACK_SECONDS // 60}min to {ask}c — buying {count}",
-                        "edge",
-                    )
-                    intents.append(
-                        OrderIntent(ticker, side, "buy", count, ask, f"swing dip -{drop}c")
-                    )
-                    self.entries[key] = {"price": ask, "count": count, "ts": now}
-                    open_slots -= 1
+                if bid is None:
+                    skip("no_bid")
+                    continue
+                if ask - bid > settings.swing_max_spread_cents:
+                    skip("spread")
+                    continue
+                # Past every liquidity gate: this side is a genuine candidate,
+                # so its drop is the number worth reporting when nothing fires.
+                if best is None or drop > best[0]:
+                    best = (drop, f"{ticker} {side} @{ask}c")
+                if drop < settings.swing_drop_cents:
+                    skip("drop")
+                    continue
+                count = settings.contracts_per_side
+                await ctx.log(
+                    f"SWING DIP {ticker} {side}: ask fell {drop}c in "
+                    f"{int(lookback) // 60}min to {ask}c — buying {count}",
+                    "edge",
+                )
+                intents.append(
+                    OrderIntent(ticker, side, "buy", count, ask, f"swing dip -{drop}c")
+                )
+                self.entries[key] = {
+                    "price": ask, "count": count, "ts": now, "confirmed": False
+                }
+                open_slots -= 1
+
+        self._last_scan = {
+            "at": now,
+            "markets": len(markets),
+            "sides_priced": sides_seen,
+            "skips": dict(skips),
+            "best_candidate_drop_cents": best[0] if best else None,
+            "best_candidate": best[1] if best else None,
+            "intents": len(intents),
+        }
+        await self._report_scan(ctx, settings, skips, best, sides_seen)
         return intents
+
+    async def _report_scan(
+        self,
+        ctx: StrategyContext,
+        settings: Any,
+        skips: dict[str, int],
+        best: tuple[int, str] | None,
+        sides_seen: int,
+    ) -> None:
+        """One line naming the binding gate, logged only while the strategy is
+        idle — enough to tell 'no dips yet' apart from 'every book is too wide
+        to ever qualify', without a message per market per scan."""
+        if not skips or not sides_seen:
+            return
+        tally = ", ".join(
+            f"{SKIP_LABELS.get(r, r)}: {n}"
+            for r, n in sorted(skips.items(), key=lambda kv: -kv[1])
+        )
+        if best is not None:
+            closest = (
+                f"best candidate {best[1]} fell {best[0]}c "
+                f"(need {settings.swing_drop_cents}c)"
+            )
+        else:
+            closest = (
+                "no side cleared the price band and spread gates — widen "
+                f"swing_max_spread_cents (now {settings.swing_max_spread_cents}c) "
+                f"or the price band (now {settings.swing_price_band_low}-"
+                f"{settings.swing_price_band_high}c)"
+            )
+        await ctx.log(f"no entry from {sides_seen} side(s) — {tally}; {closest}", "scan")
