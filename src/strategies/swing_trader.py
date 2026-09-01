@@ -74,14 +74,46 @@ class SwingTraderStrategy(Strategy):
             s.strip().upper() for s in ctx.settings.swing_series.split(",") if s.strip()
         ]
         if not series:
-            return await resolve_target_tickers(ctx)
+            tickers = await resolve_target_tickers(ctx)
+            await self._report_coverage(ctx, {"(arb targets)": len(tickers)}, tickers)
+            return tickers
         tickers: list[str] = []
+        per_series: dict[str, int] = {}
         for s in series:
+            found = 0
             data = await ctx.client.get_markets(status="open", series_ticker=s, limit=50)
             for market in data.get("markets", []):
                 if market.get("ticker") and market["ticker"] not in tickers:
                     tickers.append(market["ticker"])
+                    found += 1
+            per_series[s] = found
+        await self._report_coverage(ctx, per_series, tickers)
         return tickers
+
+    async def _report_coverage(
+        self, ctx: StrategyContext, per_series: dict[str, int], tickers: list[str]
+    ) -> None:
+        """Log what the scan actually watches — but only when the picture
+        changes, so the activity stream isn't spammed every cycle. A series
+        that resolves to zero open markets is either between games or a
+        ticker that doesn't exist on Kalshi; call those out explicitly."""
+        snapshot = (len(tickers), tuple(sorted(per_series.items())))
+        if snapshot == getattr(self, "_last_coverage", None):
+            return
+        self._last_coverage = snapshot
+        empty = sorted(s for s, n in per_series.items() if n == 0)
+        active = {s: n for s, n in per_series.items() if n > 0}
+        summary = ", ".join(f"{s}:{n}" for s, n in sorted(active.items())) or "none"
+        await ctx.log(
+            f"watching {len(tickers)} open market(s) — {summary}",
+            "info" if tickers else "warn",
+        )
+        if empty:
+            await ctx.log(
+                f"no open markets in: {', '.join(empty)} "
+                "(no games right now, or the series ticker doesn't exist)",
+                "warn",
+            )
 
     @staticmethod
     def _held(positions: dict[str, int], ticker: str, side: str) -> int:
