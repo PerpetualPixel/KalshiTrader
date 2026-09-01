@@ -261,3 +261,76 @@ def test_scan_records_the_closest_candidate_when_nothing_fires():
     asyncio.run(_scan(strategy, ctx))
     assert strategy._last_scan["best_candidate_drop_cents"] == 3
     assert strategy._last_scan["skips"].get("drop")
+
+
+# ── In-play filtering ─────────────────────────────────────────────────
+# Kalshi reports a match starting tomorrow as an "open" market, so status
+# alone can't tell a live game from a scheduled one.
+
+
+def test_market_volume_prefers_the_more_specific_field():
+    from src.strategies.base import market_volume
+
+    assert market_volume({"volume": 10, "volume_24h": 3}) == 3
+    assert market_volume({"volume": 10}) == 10
+    assert market_volume({}) is None
+    assert market_volume({"volume": "lots"}) is None
+
+
+def test_inert_markets_are_dropped_above_the_volume_floor():
+    from src.strategies.swing_trader import SwingTraderStrategy
+
+    markets = {
+        "LIVE": {"ticker": "LIVE", "volume": 500},
+        "SCHEDULED": {"ticker": "SCHEDULED", "volume": 0},
+    }
+    kept, skipped = SwingTraderStrategy._drop_inert(markets, 50)
+    assert list(kept) == ["LIVE"]
+    assert skipped == 1
+
+
+def test_unknown_volume_is_not_treated_as_zero():
+    from src.strategies.swing_trader import SwingTraderStrategy
+
+    markets = {"NO_FIELD": {"ticker": "NO_FIELD"}}
+    kept, skipped = SwingTraderStrategy._drop_inert(markets, 50)
+    assert list(kept) == ["NO_FIELD"]
+    assert skipped == 0
+
+
+def test_volume_floor_of_zero_watches_everything():
+    from src.strategies.swing_trader import SwingTraderStrategy
+
+    markets = {"A": {"ticker": "A", "volume": 0}}
+    kept, skipped = SwingTraderStrategy._drop_inert(markets, 0)
+    assert kept == markets and skipped == 0
+
+
+def test_moving_sides_counts_only_asks_that_changed():
+    import time
+
+    from src.strategies.swing_trader import SwingTraderStrategy
+
+    s = SwingTraderStrategy()
+    now = time.time()
+    for key, asks in {
+        ("MOVED", "yes"): [60, 58, 55],
+        ("FLAT", "yes"): [60, 60, 60],
+    }.items():
+        for i, ask in enumerate(asks):
+            s._note_ask(key, now - (10 - i), ask, 300.0)
+    assert s._moving_sides(now, 300.0) == 1
+
+
+def test_a_scan_over_flat_books_reports_zero_moving():
+    import asyncio
+
+    from src.strategies.swing_trader import SwingTraderStrategy
+
+    market = {"ticker": "KXTEST-A", "yes_bid": 58, "yes_ask": 60, "volume": 100}
+    client = _FakeClient(market)
+    strategy = SwingTraderStrategy()
+    ctx = _ctx(client)
+    asyncio.run(_scan(strategy, ctx))
+    asyncio.run(_scan(strategy, ctx))  # price never changes
+    assert strategy._last_scan["sides_moving"] == 0

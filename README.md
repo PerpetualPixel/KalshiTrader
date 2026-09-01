@@ -61,12 +61,44 @@ The core loop for each running strategy:
   password (stored as a PBKDF2-SHA256 hash in SQLite); afterwards you log in
   with it. Sessions are HMAC-signed httponly cookies, and every API route and
   the WebSocket require one.
+- **PIN (optional second factor)**: set one at first run, or later in the
+  **Dashboard Security** panel — changing it needs the current password, and
+  rotates the session secret so every existing login is invalidated. When a
+  PIN is set both factors are required, and a failed login never says which
+  one was wrong.
+- **Login throttling**: five consecutive failures lock logins for a minute,
+  doubling per exhausted round up to an hour. The lockout is per-process, so
+  restarting the server clears it.
 - **API credentials in the GUI**: paste (or file-pick) your Kalshi Key ID and
   RSA private key in the **API Credentials** panel — separate slots for demo
   and live. The key is validated, written to `keys/<env>_key.pem` with `0600`
   permissions, and the connection is tested immediately (it shows your
   balance on success). GUI-saved credentials take priority over `.env` values,
   which remain supported as a fallback.
+
+## Remote access
+
+The dashboard binds `127.0.0.1` on purpose. The bot holds your Kalshi API key
+and can spend real money, so **do not port-forward it to the open internet** —
+over plain HTTP the password, PIN and session cookie all travel in the clear.
+
+The bot also has to keep running to manage positions: stop-losses, take-profits
+and the max-hold timer only fire while the process is alive. So it needs a
+machine that stays on, not a laptop that sleeps. GitHub Pages and other static
+hosts cannot run it at all — there is no server process there to hold a
+position, let alone close one.
+
+**Private networking is the safe way in.** With [Tailscale](https://tailscale.com)
+installed on the host and on your phone or laptop, reach the dashboard at
+`http://<machine-name>:8000` over an encrypted link, with nothing publicly
+exposed and no port forwarding. This is the recommended setup and needs no
+change to the app.
+
+If you do put it behind a TLS-terminating proxy (Cloudflare Tunnel, Caddy,
+nginx), set `COOKIE_SECURE=true` so the session cookie is only ever sent over
+HTTPS, and put an access layer in front of it. Leave `COOKIE_SECURE` unset for
+plain `http://127.0.0.1`, where a secure cookie would be dropped and you would
+not be able to log in at all.
 
 ## Trades & PnL tracking
 
@@ -171,6 +203,8 @@ dashboard auth (password hashing, session tokens), trade PnL accounting
 (average cost, settlements, fees), and the swing trader (dip detection and
 exit rules, entry-slot accounting, and that every settings field the
 dashboard sends actually survives the API round-trip).
+
+It also covers the dashboard's second factor and login throttling.
 
 GitHub Actions runs the suite on every push and pull request against Python
 3.10 through 3.13 — see `.github/workflows/tests.yml`.
