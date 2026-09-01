@@ -109,6 +109,36 @@
         </div>
       </section>
 
+      <!-- Manual trade -->
+      <section class="panel">
+        <h2>Manual Trade</h2>
+        <form id="manual-form">
+          <label>Ticker
+            <input type="text" name="ticker" placeholder="KXATPMATCH-…" required autocomplete="off" />
+          </label>
+          <label>Side
+            <select name="side">
+              <option value="yes">YES</option>
+              <option value="no">NO</option>
+            </select>
+          </label>
+          <label>Action
+            <select name="action">
+              <option value="buy">Buy</option>
+              <option value="sell">Sell</option>
+            </select>
+          </label>
+          <label>Quantity
+            <input type="number" name="count" min="1" value="1" required />
+          </label>
+          <label>Limit Price (cents, 1-99)
+            <input type="number" name="price_cents" min="1" max="99" required />
+          </label>
+          <button type="submit" class="btn primary">Place Order</button>
+          <span id="manual-result"></span>
+        </form>
+      </section>
+
       <!-- API credentials -->
       <section class="panel">
         <h2>API Credentials</h2>

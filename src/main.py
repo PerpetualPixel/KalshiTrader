@@ -21,6 +21,7 @@ from .config import env_config
 from .database import Database
 from .kalshi_client import KalshiAPIError
 from .pnl import compute_pnl
+from .strategies.base import OrderIntent
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
@@ -297,6 +298,40 @@ async def risk_reset() -> dict[str, Any]:
 async def cancel_all() -> dict[str, int]:
     cancelled = await engine.cancel_all_orders()
     return {"cancelled": cancelled}
+
+
+class ManualOrderBody(BaseModel):
+    ticker: str
+    side: str  # yes | no
+    action: str  # buy | sell
+    count: int
+    price_cents: int
+
+
+@app.post("/api/manual_order")
+async def manual_order(body: ManualOrderBody) -> dict[str, Any]:
+    """Place a one-off order by hand. It flows through the same risk checks,
+    order TTL, audit trail, and fill/PnL tracking as strategy orders."""
+    if engine.client is None:
+        raise HTTPException(503, engine.client_error or "API client not ready")
+    if body.side not in ("yes", "no"):
+        raise HTTPException(400, "side must be yes or no")
+    if body.action not in ("buy", "sell"):
+        raise HTTPException(400, "action must be buy or sell")
+    if not 1 <= body.price_cents <= 99:
+        raise HTTPException(400, "price must be 1-99 cents")
+    if body.count < 1:
+        raise HTTPException(400, "count must be at least 1")
+    intent = OrderIntent(
+        ticker=body.ticker.strip().upper(),
+        side=body.side,
+        action=body.action,
+        count=body.count,
+        price_cents=body.price_cents,
+        reason="manual order from dashboard",
+    )
+    await engine._submit("manual", intent)
+    return {"ok": True}
 
 
 # ── WebSocket activity stream ─────────────────────────────────────────

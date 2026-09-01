@@ -418,6 +418,38 @@ $("#settings-form").addEventListener("submit", async (e) => {
 
 /* ── Controller footer buttons ────────────────────────────────────── */
 
+$("#manual-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const resultEl = $("#manual-result");
+  const body = {
+    ticker: form.ticker.value.trim().toUpperCase(),
+    side: form.side.value,
+    action: form.action.value,
+    count: parseInt(form.count.value),
+    price_cents: parseInt(form.price_cents.value),
+  };
+  const cost = ((body.count * body.price_cents) / 100).toFixed(2);
+  if (
+    !confirm(
+      `Place order: ${body.action.toUpperCase()} ${body.count} ${body.side.toUpperCase()} ` +
+        `on ${body.ticker} @ ${body.price_cents}c?\n\nMax cost: $${cost}`
+    )
+  )
+    return;
+  resultEl.textContent = "placing…";
+  resultEl.style.color = "var(--muted)";
+  try {
+    await api("/api/manual_order", { method: "POST", body: JSON.stringify(body) });
+    resultEl.textContent = "order sent ✓ (see Orders table / activity log)";
+    resultEl.style.color = "var(--green)";
+    refreshOrders();
+  } catch (err) {
+    resultEl.textContent = err.message;
+    resultEl.style.color = "var(--red)";
+  }
+});
+
 $("#cancel-all").addEventListener("click", async () => {
   if (!confirm("Cancel ALL resting orders?")) return;
   const res = await api("/api/orders/cancel_all", { method: "POST" });

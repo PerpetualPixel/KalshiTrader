@@ -178,8 +178,9 @@ main { padding: 1rem 1.2rem; max-width: 1500px; margin: 0 auto; }
 .cred-status .row { display: flex; justify-content: space-between; color: var(--muted); }
 .cred-status .ok { color: var(--green); }
 .cred-status .missing { color: var(--amber); }
-#cred-form { display: flex; flex-direction: column; gap: 0.55rem; }
-#cred-form label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--muted); font-size: 0.75rem; }
+#cred-form, #manual-form { display: flex; flex-direction: column; gap: 0.55rem; }
+#cred-form label, #manual-form label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--muted); font-size: 0.75rem; }
+#manual-form input, #manual-form select,
 #cred-form input, #cred-form select, #cred-form textarea {
   background: var(--bg);
   border: 1px solid var(--border);
