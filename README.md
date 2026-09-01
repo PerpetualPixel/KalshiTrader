@@ -167,8 +167,13 @@ pytest
 
 Covers the risk manager (ceilings, stop-loss breaker), the API client
 (RSA-PSS signature correctness, orderbook price derivation, input validation),
-dashboard auth (password hashing, session tokens), and trade PnL accounting
-(average cost, settlements, fees).
+dashboard auth (password hashing, session tokens), trade PnL accounting
+(average cost, settlements, fees), and the swing trader (dip detection and
+exit rules, entry-slot accounting, and that every settings field the
+dashboard sends actually survives the API round-trip).
+
+GitHub Actions runs the suite on every push and pull request against Python
+3.10 through 3.13 — see `.github/workflows/tests.yml`.
 
 ## Notes
 

@@ -238,14 +238,25 @@ class SettingsPatch(BaseModel):
     order_ttl_seconds: int | None = None
     arb_tickers: str | None = None
     arb_series: str | None = None
+    fair_values: dict[str, int] | None = None
     swing_series: str | None = None
     swing_drop_cents: int | None = None
+    swing_lookback_seconds: int | None = None
+    swing_max_spread_cents: int | None = None
+    swing_price_band_low: int | None = None
+    swing_price_band_high: int | None = None
     swing_take_profit_cents: int | None = None
     swing_stop_loss_cents: int | None = None
     swing_max_hold_minutes: int | None = None
     swing_max_positions: int | None = None
-    fair_values: dict[str, int] | None = None
     confirm_live: bool = False
+
+    # A settings key the dashboard sends but this model forgets is dropped
+    # silently by pydantic, so the setting simply never takes effect — that
+    # is how the swing fields came to be missing here in the first place.
+    # Reject unknown keys loudly instead, so the next field that goes missing
+    # is a 422 rather than a mystery.
+    model_config = {"extra": "forbid"}
 
 
 @app.get("/api/settings")
@@ -316,56 +327,47 @@ async def debug_balance() -> dict[str, Any]:
 
 @app.get("/api/debug/swing")
 async def debug_swing() -> dict[str, Any]:
-    """Diagnostic info for the swing trader: config, state, and current positions."""
-    if engine.client is None:
-        raise HTTPException(503, engine.client_error or "API client not ready")
-    from .strategies.swing_trader import SwingTraderStrategy, PRICE_BAND, MAX_SPREAD_CENTS, LOOKBACK_SECONDS
-
-    swing = engine.strategies.get("swing")
-    if not isinstance(swing, SwingTraderStrategy):
-        raise HTTPException(400, "swing strategy not found")
-
+    """What the swing trader is tracking and why its last scan did or didn't
+    fire — the gate settings, the per-gate skip tally, the closest candidate
+    it saw, and the positions actually held on Kalshi."""
+    strategy = engine.strategies.get("swing")
+    if strategy is None or not hasattr(strategy, "debug_state"):
+        raise HTTPException(404, "swing strategy not available")
     settings = engine.settings
-    is_running = engine.strategy_state.get("swing") == "running"
 
-    # Get current positions
-    positions_raw = await engine.client.get_positions()
-    positions = {
-        str(p.get("ticker", "")): int(p.get("position", 0) or 0)
-        for p in positions_raw.get("market_positions", [])
-    }
-
-    import time
-    now = time.time()
+    # Live positions are useful here but must not make the endpoint useless
+    # when the client is down — that is exactly when it gets consulted.
+    positions_held: dict[str, int] = {}
+    positions_error: str | None = None
+    if engine.client is None:
+        positions_error = engine.client_error or "API client not ready"
+    else:
+        try:
+            raw = await engine.client.get_positions()
+            positions_held = {
+                str(p.get("ticker", "")): int(p.get("position", 0) or 0)
+                for p in raw.get("market_positions", [])
+                if int(p.get("position", 0) or 0) != 0
+            }
+        except Exception as exc:  # noqa: BLE001 — diagnostics must still render
+            positions_error = str(exc)
 
     return {
-        "swing_state": engine.strategy_state.get("swing"),
-        "is_running": is_running,
-        "config": {
-            "swing_series": settings.swing_series,
-            "arb_series_fallback": settings.arb_series,
-            "arb_tickers_fallback": settings.arb_tickers,
-            "swing_drop_cents": settings.swing_drop_cents,
-            "swing_take_profit_cents": settings.swing_take_profit_cents,
-            "swing_stop_loss_cents": settings.swing_stop_loss_cents,
-            "swing_max_hold_minutes": settings.swing_max_hold_minutes,
-            "swing_max_positions": settings.swing_max_positions,
-            "price_band": PRICE_BAND,
-            "max_spread_cents": MAX_SPREAD_CENTS,
-            "lookback_seconds": LOOKBACK_SECONDS,
+        "state": engine.strategy_state.get("swing"),
+        "targets": settings.swing_series or f"(fallback) {settings.arb_series}",
+        "gates": {
+            "drop_cents": settings.swing_drop_cents,
+            "lookback_seconds": settings.swing_lookback_seconds,
+            "max_spread_cents": settings.swing_max_spread_cents,
+            "price_band": [
+                settings.swing_price_band_low,
+                settings.swing_price_band_high,
+            ],
+            "max_positions": settings.swing_max_positions,
         },
-        "currently_tracking": {
-            f"{t}:{s}": {
-                "entry_price_cents": e["price"],
-                "entry_count": e["count"],
-                "held_seconds": round(now - e["ts"], 1),
-            }
-            for (t, s), e in swing.entries.items()
-        },
-        "positions_held": {
-            t: v for t, v in positions.items() if v != 0
-        },
-        "note": "Check /api/status for strategy running state; /api/markets to see available markets for swing_series",
+        "positions_held": positions_held,
+        "positions_error": positions_error,
+        **strategy.debug_state(),
     }
 
 
