@@ -42,6 +42,13 @@ class Strategy:
     async def scan_once(self, ctx: StrategyContext) -> list[OrderIntent]:
         raise NotImplementedError
 
+    def on_order_result(self, intent: OrderIntent, ok: bool) -> None:
+        """Called once per intent after the engine has tried to submit it.
+
+        `ok` is False when risk blocked the order or Kalshi rejected it. A
+        strategy that reserves internal state when it emits an intent needs
+        this to release that reservation; the default is to ignore it."""
+
 
 def market_prices(market: dict[str, Any]) -> dict[str, int | None]:
     """Best bid/ask straight from a /markets list entry (no orderbook call).
