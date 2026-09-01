@@ -1,8 +1,30 @@
+from src.strategies.base import market_prices
 from src.strategies.swing_trader import (
     LOOKBACK_SECONDS,
     exit_reason,
     swing_drop,
 )
+
+
+def test_market_prices_reads_list_fields():
+    m = {"yes_bid": 55, "yes_ask": 58, "no_bid": 42, "no_ask": 45}
+    assert market_prices(m) == {"yes_bid": 55, "yes_ask": 58, "no_bid": 42, "no_ask": 45}
+
+
+def test_market_prices_derives_no_side_from_yes():
+    m = {"yes_bid": 55, "yes_ask": 58}
+    p = market_prices(m)
+    assert p["no_bid"] == 42  # 100 - yes_ask
+    assert p["no_ask"] == 45  # 100 - yes_bid
+
+
+def test_market_prices_treats_zero_as_missing():
+    # Kalshi reports 0 on an empty book side
+    m = {"yes_bid": 0, "yes_ask": 58}
+    p = market_prices(m)
+    assert p["yes_bid"] is None
+    assert p["no_ask"] is None  # can't derive from missing yes_bid
+    assert p["no_bid"] == 42
 
 
 def test_swing_drop_measures_fall_from_recent_high():
