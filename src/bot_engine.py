@@ -51,6 +51,8 @@ class BotEngine:
         }
         # per-strategy state: stopped | running | paused
         self.strategy_state: dict[str, str] = {n: "stopped" for n in self.strategies}
+        # per-strategy P&L tracking for circuit breaker
+        self.strategy_pnl: dict[str, int] = {n: 0 for n in self.strategies}
         self._tasks: dict[str, asyncio.Task] = {}
         self._background: list[asyncio.Task] = []
         self._ttl_tasks: set[asyncio.Task] = set()
@@ -130,8 +132,11 @@ class BotEngine:
 
     async def apply_settings(self, patch: dict[str, Any], actor: str = "dashboard") -> BotSettings:
         old_env = self.settings.env
+        logger.info(f"applying settings patch from {actor}: {list(patch.keys())}")
         self.settings = self.settings.update(patch)
+        logger.info(f"in-memory settings updated; saving to DB")
         self.db.save_settings(self.settings)
+        logger.info(f"settings persisted to database")
         self.risk.update_settings(self.settings)
         self.db.record_audit("settings_updated", patch, actor=actor)
         if self.settings.env != old_env:
@@ -141,6 +146,7 @@ class BotEngine:
             )
             self._build_client()
         await self.log(f"settings updated: {', '.join(patch.keys())}")
+        logger.info(f"settings update complete; current swing_series={self.settings.swing_series!r}")
         return self.settings
 
     # ── Strategy control ──────────────────────────────────────────────
@@ -179,6 +185,9 @@ class BotEngine:
         while True:
             try:
                 if self.strategy_state.get(name) == "running":
+                    if not await self._check_strategy_circuit_breaker(name):
+                        await asyncio.sleep(max(1.0, self.settings.scan_interval_seconds))
+                        continue
                     if self.client is None:
                         await self.log(
                             f"{name}: no API client ({self.client_error}); idle", "warn"
@@ -201,6 +210,22 @@ class BotEngine:
                 logger.exception("strategy %s crashed a scan", name)
                 await self.log(f"{name}: scan error: {exc}", "error", source=name)
             await asyncio.sleep(max(1.0, self.settings.scan_interval_seconds))
+
+    async def _check_strategy_circuit_breaker(self, name: str) -> bool:
+        """Return True if strategy should continue running; False if it should auto-pause."""
+        if name not in self.strategy_pnl:
+            return True
+        pnl_cents = self.strategy_pnl[name]
+        # Auto-pause if strategy has lost > 10% of max_money_working
+        threshold_cents = -(self.settings.max_money_working_cents // 10)
+        if pnl_cents < threshold_cents:
+            await self.pause_strategy(name)
+            await self.log(
+                f"{name}: auto-paused due to P&L loss ({pnl_cents}c exceeds threshold {threshold_cents}c)",
+                "warn", source=name
+            )
+            return False
+        return True
 
     # ── Order submission ──────────────────────────────────────────────
 
@@ -504,11 +529,23 @@ class BotEngine:
             )
             if is_new:
                 changed = True
+                fill_price = (fill.get('yes_price') if side == 'yes' else fill.get('no_price')) or 0
+                ticker = fill.get('ticker')
+                action = fill.get('action')
+                count = fill.get('count', 0)
+                # Find original order to link strategy and compute P&L
+                entry_order = self.db.get_order_by_id(str(fill.get("order_id", "")))
+                strategy_name = entry_order.get("strategy", "unknown") if entry_order else "unknown"
+                # Update strategy P&L
+                if entry_order and action == "sell":
+                    entry_price = entry_order.get("price_cents", 0)
+                    pnl_per_contract = fill_price - entry_price if entry_order.get("action") == "buy" else entry_price - fill_price
+                    pnl_total = pnl_per_contract * count
+                    self.strategy_pnl[strategy_name] = self.strategy_pnl.get(strategy_name, 0) + pnl_total
                 await self.log(
-                    f"FILL [{fill.get('ticker')}] {fill.get('action')} "
-                    f"{fill.get('count')} {fill.get('side')} @ "
-                    f"{(fill.get('yes_price') if side == 'yes' else fill.get('no_price')) or '?'}c",
-                    "fill", "fills",
+                    f"FILL [{ticker}] {action} {count} {side} @ {fill_price}c "
+                    f"(strategy: {strategy_name}; order_id: {fill.get('order_id')})",
+                    "fill", strategy_name,
                 )
         return changed
 
