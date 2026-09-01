@@ -136,29 +136,54 @@ class KalshiClient:
         expiration_ts: int | None = None,
         client_order_id: str | None = None,
     ) -> dict[str, Any]:
-        """Place a limit order. Price is in cents (1-99) for the given side."""
+        """Place a limit order via Kalshi's V2 create-order endpoint.
+
+        Callers still speak the natural yes/no + buy/sell + integer-cents
+        language; this translates to V2's single YES-denominated book, where
+        every order is a bid or an ask at a dollar price:
+            buy YES @p  -> bid @ p          sell YES @p -> ask @ p
+            buy NO  @p  -> ask @ (100-p)    sell NO @p  -> bid @ (100-p)
+        (Buying NO at p is the same trade as selling YES at 100-p.)
+
+        V2's time_in_force has no timed expiry (only GTC/IOC/FOK), so
+        `expiration_ts` is ignored here — the engine enforces the order TTL
+        by cancelling stale orders itself.
+        """
         if side not in ("yes", "no"):
             raise ValueError(f"invalid side {side!r}")
         if action not in ("buy", "sell"):
             raise ValueError(f"invalid action {action!r}")
         if not 1 <= price_cents <= 99:
             raise ValueError(f"price {price_cents} out of range 1-99")
+        if side == "yes":
+            book_side = "bid" if action == "buy" else "ask"
+            yes_price_cents = price_cents
+        else:
+            book_side = "ask" if action == "buy" else "bid"
+            yes_price_cents = 100 - price_cents
         body: dict[str, Any] = {
             "ticker": ticker,
             "client_order_id": client_order_id or str(uuid.uuid4()),
-            "side": side,
-            "action": action,
-            "count": count,
-            "type": "limit",
-            f"{side}_price": price_cents,
+            "side": book_side,
+            "count": str(count),
+            "price": f"{yes_price_cents / 100:.2f}",
+            "time_in_force": "good_till_canceled",
+            "self_trade_prevention_type": "taker_at_cross",
         }
-        if expiration_ts is not None:
-            body["expiration_ts"] = expiration_ts
-        data = await self._request("POST", "/portfolio/orders", json=body)
+        data = await self._request("POST", "/portfolio/events/orders", json=body)
         return data.get("order", data)
 
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
-        return await self._request("DELETE", f"/portfolio/orders/{order_id}")
+        try:
+            return await self._request("DELETE", f"/portfolio/orders/{order_id}")
+        except KalshiAPIError as exc:
+            # If the v1 cancel route is retired like the v1 create route was,
+            # fall back to the V2 events path.
+            if exc.status_code == 410:
+                return await self._request(
+                    "DELETE", f"/portfolio/events/orders/{order_id}"
+                )
+            raise
 
     # ── Market data ───────────────────────────────────────────────────
 

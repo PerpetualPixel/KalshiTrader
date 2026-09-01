@@ -63,6 +63,44 @@ def test_place_order_validates_inputs(client):
     asyncio.run(run())
 
 
+def _capture_order_body(client):
+    """Patch _request to capture the V2 order body instead of hitting the API."""
+    captured = {}
+
+    async def fake_request(method, path, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json"] = kwargs.get("json")
+        return {"order": {"order_id": "o1"}}
+
+    client._request = fake_request
+    return captured
+
+
+@pytest.mark.parametrize(
+    "side,action,price_cents,expect_side,expect_price",
+    [
+        ("yes", "buy", 55, "bid", "0.55"),
+        ("yes", "sell", 55, "ask", "0.55"),
+        ("no", "buy", 45, "ask", "0.55"),  # buy NO 45c == sell YES 55c
+        ("no", "sell", 45, "bid", "0.55"),  # sell NO 45c == buy YES 55c
+    ],
+)
+def test_place_order_v2_mapping(client, side, action, price_cents, expect_side, expect_price):
+    import asyncio
+
+    captured = _capture_order_body(client)
+    asyncio.run(client.place_order("T", side, action, 3, price_cents))
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/portfolio/events/orders"
+    body = captured["json"]
+    assert body["side"] == expect_side
+    assert body["price"] == expect_price
+    assert body["count"] == "3"
+    assert body["time_in_force"] == "good_till_canceled"
+    assert body["client_order_id"]
+
+
 def test_best_prices_derivation():
     # Resting bids: best yes bid 40c, best no bid 55c
     book = {"yes": [[38, 100], [40, 20]], "no": [[55, 10], [50, 30]]}

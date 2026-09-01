@@ -53,6 +53,7 @@ class BotEngine:
         self.strategy_state: dict[str, str] = {n: "stopped" for n in self.strategies}
         self._tasks: dict[str, asyncio.Task] = {}
         self._background: list[asyncio.Task] = []
+        self._ttl_tasks: set[asyncio.Task] = set()
         self._subscribers: list[Callable[[dict[str, Any]], None]] = []
         self.last_overview: dict[str, Any] = {}
 
@@ -70,7 +71,7 @@ class BotEngine:
         )
 
     async def shutdown(self) -> None:
-        for task in list(self._tasks.values()) + self._background:
+        for task in list(self._tasks.values()) + self._background + list(self._ttl_tasks):
             task.cancel()
         if self.client:
             await self.client.close()
@@ -278,6 +279,27 @@ class BotEngine:
             "order", strategy_name,
         )
         self._emit({"type": "orders_changed"})
+
+        # Kalshi's V2 order API has no timed expiration, so enforce the TTL
+        # ourselves: cancel whatever is still resting once it elapses.
+        order_id = str(order.get("order_id", ""))
+        if order_id:
+            task = asyncio.create_task(
+                self._expire_order(order_id, self.settings.order_ttl_seconds)
+            )
+            self._ttl_tasks.add(task)
+            task.add_done_callback(self._ttl_tasks.discard)
+
+    async def _expire_order(self, order_id: str, ttl_seconds: int) -> None:
+        await asyncio.sleep(max(1, ttl_seconds))
+        if self.client is None:
+            return
+        try:
+            await self.client.cancel_order(order_id)
+            await self.log(f"order {order_id} expired (TTL) and was cancelled", "info")
+            self._emit({"type": "orders_changed"})
+        except KalshiAPIError:
+            pass  # already filled or cancelled — nothing to do
 
     async def cancel_all_orders(self) -> int:
         """Cancel every resting order. Returns how many were cancelled."""
