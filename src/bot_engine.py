@@ -327,7 +327,20 @@ class BotEngine:
                 {"amount_cents": amount, "from_shard": 0, "to_shard": shard,
                  "ticker": intent.ticker},
             )
-            return await place()
+            # Shards are separate matching engines, so the transfer settles
+            # asynchronously — give it a moment, and retry a couple of times
+            # if the destination balance hasn't landed yet.
+            for attempt in range(3):
+                await asyncio.sleep(1.5 * (attempt + 1))
+                try:
+                    return await place()
+                except KalshiAPIError as exc2:
+                    if "insufficient_balance" not in str(exc2) or attempt == 2:
+                        raise
+                    await self.log(
+                        f"shard {shard} balance not settled yet, retrying…", "warn"
+                    )
+            raise  # unreachable, satisfies control flow
 
     async def _market_shard(self, ticker: str) -> int | None:
         """The exchange shard a market lives on, from its market object."""
