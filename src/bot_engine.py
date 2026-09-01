@@ -308,7 +308,12 @@ class BotEngine:
         try:
             return await place()
         except KalshiAPIError as exc:
-            if "user_not_found" not in str(exc):
+            # user_not_found: account not yet created on the market's shard.
+            # insufficient_balance: shard account exists but is unfunded —
+            # both are fixed by moving collateral over (a transfer from an
+            # equally-broke default shard simply fails and propagates).
+            fundable = "user_not_found" in str(exc) or "insufficient_balance" in str(exc)
+            if not fundable:
                 raise
             shard = await self._market_shard(intent.ticker)
             if not shard or shard <= 0:

@@ -192,7 +192,9 @@ class KalshiClient:
             "POST",
             "/portfolio/intra_exchange_instance_transfer",
             json={
-                "amount": amount_cents,
+                # amount is in units of $0.0001 (hundredth of a cent) — the
+                # balance_breakdown endpoint reports 4-decimal dollar values.
+                "amount": amount_cents * 100,
                 # source/destination are exchange-instance types; regular
                 # trading accounts are "event_contract" ("margined" is
                 # Kalshi's margin product). Shard indexes route within them.
