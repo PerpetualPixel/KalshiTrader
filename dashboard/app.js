@@ -367,6 +367,29 @@ async function loadSettings() {
   form.swing_stop_loss_cents.value = s.swing_stop_loss_cents;
   form.swing_max_hold_minutes.value = s.swing_max_hold_minutes;
   form.swing_max_positions.value = s.swing_max_positions;
+
+  // Restore user's Target Series/Tickers from localStorage (persists across reloads)
+  try {
+    const saved = JSON.parse(localStorage.getItem("kalshi_target_settings") || "{}");
+    if (saved.arb_tickers) form.arb_tickers.value = saved.arb_tickers;
+    if (saved.arb_series) form.arb_series.value = saved.arb_series;
+    if (saved.swing_series) form.swing_series.value = saved.swing_series;
+  } catch (e) {
+    // Ignore localStorage parse errors
+  }
+}
+
+// Save Target Series/Tickers to localStorage when settings load
+function saveTargetSettingsToStorage(form) {
+  try {
+    localStorage.setItem("kalshi_target_settings", JSON.stringify({
+      arb_tickers: form.arb_tickers.value,
+      arb_series: form.arb_series.value,
+      swing_series: form.swing_series.value,
+    }));
+  } catch (e) {
+    // localStorage may be full or disabled; fail silently
+  }
 }
 
 $("#settings-form").addEventListener("submit", async (e) => {
@@ -413,6 +436,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     await api("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
     statusEl.textContent = "saved ✓";
     statusEl.style.color = "var(--green)";
+    saveTargetSettingsToStorage(form);
     await Promise.all([refreshStatus(), refreshCredentials()]);
   } catch (err) {
     statusEl.textContent = err.message;
