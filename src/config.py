@@ -116,7 +116,7 @@ class BotSettings(BaseModel):
         description="Comma-separated series for the swing trader; falls back to the arb targets when empty",
     )
     swing_drop_cents: int = Field(
-        default=10, ge=2, le=50,
+        default=5, ge=2, le=50,
         description="Ask must fall this much within the lookback window to trigger a dip buy",
     )
     swing_take_profit_cents: int = Field(
