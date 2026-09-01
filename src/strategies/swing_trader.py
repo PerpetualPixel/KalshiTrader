@@ -202,22 +202,44 @@ class SwingTraderStrategy(Strategy):
                 key = (ticker, side)
                 drop = swing_drop(list(self.ask_history.get(key, ())), now, ask)
                 self._note_ask(key, now, ask)
-                if key in self.entries or open_slots <= 0:
+                if key in self.entries:
+                    continue
+                if open_slots <= 0:
                     continue
                 if not PRICE_BAND[0] <= ask <= PRICE_BAND[1]:
-                    continue
-                if bid is None or ask - bid > MAX_SPREAD_CENTS:
-                    continue
-                if drop >= settings.swing_drop_cents:
-                    count = settings.contracts_per_side
                     await ctx.log(
-                        f"SWING DIP {ticker} {side}: ask fell {drop}c in "
-                        f"{LOOKBACK_SECONDS // 60}min to {ask}c — buying {count}",
-                        "edge",
+                        f"SWING {ticker} {side}: ask {ask}c outside PRICE_BAND {PRICE_BAND}",
+                        "debug",
                     )
-                    intents.append(
-                        OrderIntent(ticker, side, "buy", count, ask, f"swing dip -{drop}c")
+                    continue
+                if bid is None:
+                    await ctx.log(
+                        f"SWING {ticker} {side}: no bid data",
+                        "debug",
                     )
-                    self.entries[key] = {"price": ask, "count": count, "ts": now}
-                    open_slots -= 1
+                    continue
+                if ask - bid > MAX_SPREAD_CENTS:
+                    spread = ask - bid
+                    await ctx.log(
+                        f"SWING {ticker} {side}: spread {spread}c > MAX_SPREAD_CENTS {MAX_SPREAD_CENTS}",
+                        "debug",
+                    )
+                    continue
+                if drop < settings.swing_drop_cents:
+                    await ctx.log(
+                        f"SWING {ticker} {side}: drop {drop}c < threshold {settings.swing_drop_cents}c",
+                        "debug",
+                    )
+                    continue
+                count = settings.contracts_per_side
+                await ctx.log(
+                    f"SWING DIP {ticker} {side}: ask fell {drop}c in "
+                    f"{LOOKBACK_SECONDS // 60}min to {ask}c — buying {count}",
+                    "edge",
+                )
+                intents.append(
+                    OrderIntent(ticker, side, "buy", count, ask, f"swing dip -{drop}c")
+                )
+                self.entries[key] = {"price": ask, "count": count, "ts": now}
+                open_slots -= 1
         return intents
