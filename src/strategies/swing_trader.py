@@ -38,7 +38,7 @@ from .base import (
 
 LOOKBACK_SECONDS = 300  # window for "how far did it just fall"
 PRICE_BAND = (15, 85)  # don't buy near-certainties or lost causes
-MAX_SPREAD_CENTS = 6  # skip illiquid books where the spread eats the swing
+MAX_SPREAD_CENTS = 8  # skip illiquid books where the spread eats the swing
 FILL_GRACE_SECONDS = 30  # after order TTL + this, an unfilled entry is dropped
 
 
