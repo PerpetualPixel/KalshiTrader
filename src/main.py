@@ -300,6 +300,14 @@ async def cancel_all() -> dict[str, int]:
     return {"cancelled": cancelled}
 
 
+@app.get("/api/debug/balance")
+async def debug_balance() -> dict[str, Any]:
+    """Raw balance response from Kalshi, including any per-shard breakdown."""
+    if engine.client is None:
+        raise HTTPException(503, engine.client_error or "API client not ready")
+    return await engine.client.get_balance_raw()
+
+
 class ManualOrderBody(BaseModel):
     ticker: str
     side: str  # yes | no

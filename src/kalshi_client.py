@@ -111,6 +111,11 @@ class KalshiClient:
         data = await self._request("GET", "/portfolio/balance")
         return int(data.get("balance", 0))
 
+    async def get_balance_raw(self) -> dict[str, Any]:
+        """Full balance response — includes the per-exchange-shard breakdown
+        Kalshi added with exchange sharding."""
+        return await self._request("GET", "/portfolio/balance")
+
     async def get_positions(self, **params: Any) -> dict[str, Any]:
         return await self._request("GET", "/portfolio/positions", params=params)
 
