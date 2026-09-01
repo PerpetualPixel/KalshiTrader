@@ -238,6 +238,12 @@ class SettingsPatch(BaseModel):
     order_ttl_seconds: int | None = None
     arb_tickers: str | None = None
     arb_series: str | None = None
+    swing_series: str | None = None
+    swing_drop_cents: int | None = None
+    swing_take_profit_cents: int | None = None
+    swing_stop_loss_cents: int | None = None
+    swing_max_hold_minutes: int | None = None
+    swing_max_positions: int | None = None
     fair_values: dict[str, int] | None = None
     confirm_live: bool = False
 
