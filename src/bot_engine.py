@@ -236,14 +236,8 @@ class BotEngine:
         client_order_id = str(uuid.uuid4())
         expiration_ts = int(time.time()) + self.settings.order_ttl_seconds
         try:
-            order = await self.client.place_order(
-                ticker=intent.ticker,
-                side=intent.side,
-                action=intent.action,
-                count=intent.count,
-                price_cents=intent.price_cents,
-                expiration_ts=expiration_ts,
-                client_order_id=client_order_id,
+            order = await self._place_with_shard_funding(
+                intent, client_order_id, expiration_ts
             )
         except KalshiAPIError as exc:
             await self.log(
@@ -289,6 +283,63 @@ class BotEngine:
             )
             self._ttl_tasks.add(task)
             task.add_done_callback(self._ttl_tasks.discard)
+
+    async def _place_with_shard_funding(
+        self, intent: OrderIntent, client_order_id: str, expiration_ts: int
+    ):
+        """Place an order; if the target market lives on an exchange shard
+        where this account holds no collateral (404 user_not_found), move
+        just enough collateral from the default shard and retry once.
+        Kalshi requires collateral preallocated per shard — see their
+        Exchange Sharding docs."""
+        assert self.client is not None
+
+        async def place():
+            return await self.client.place_order(
+                ticker=intent.ticker,
+                side=intent.side,
+                action=intent.action,
+                count=intent.count,
+                price_cents=intent.price_cents,
+                expiration_ts=expiration_ts,
+                client_order_id=client_order_id,
+            )
+
+        try:
+            return await place()
+        except KalshiAPIError as exc:
+            if "user_not_found" not in str(exc):
+                raise
+            shard = await self._market_shard(intent.ticker)
+            if not shard or shard <= 0:
+                raise
+            # Enough for the order plus fee headroom (~10%, min 5c).
+            cost = intent.count * intent.price_cents
+            amount = cost + max(5, cost // 10)
+            await self.log(
+                f"account has no collateral on exchange shard {shard} "
+                f"({intent.ticker}); transferring {amount}c from the default shard",
+                "warn",
+            )
+            await self.client.intra_exchange_transfer(amount, 0, shard)
+            self.db.record_audit(
+                "shard_collateral_transfer",
+                {"amount_cents": amount, "from_shard": 0, "to_shard": shard,
+                 "ticker": intent.ticker},
+            )
+            return await place()
+
+    async def _market_shard(self, ticker: str) -> int | None:
+        """The exchange shard a market lives on, from its market object."""
+        assert self.client is not None
+        try:
+            data = await self.client.get_markets(tickers=ticker, limit=1)
+        except KalshiAPIError:
+            return None
+        for m in data.get("markets", []):
+            if m.get("ticker") == ticker and m.get("exchange_index") is not None:
+                return int(m["exchange_index"])
+        return None
 
     async def _expire_order(self, order_id: str, ttl_seconds: int) -> None:
         await asyncio.sleep(max(1, ttl_seconds))

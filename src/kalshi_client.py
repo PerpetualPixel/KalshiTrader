@@ -177,6 +177,22 @@ class KalshiClient:
         data = await self._request("POST", "/portfolio/events/orders", json=body)
         return data.get("order", data)
 
+    async def intra_exchange_transfer(
+        self, amount_cents: int, source_shard: int, destination_shard: int
+    ) -> dict[str, Any]:
+        """Move collateral between exchange shards within the same account.
+        Kalshi requires collateral to be preallocated on a shard before
+        orders can rest there."""
+        return await self._request(
+            "POST",
+            "/portfolio/intra_exchange_instance_transfer",
+            json={
+                "amount": amount_cents,
+                "source_exchange_shard": source_shard,
+                "destination_exchange_shard": destination_shard,
+            },
+        )
+
     async def cancel_order(self, order_id: str) -> dict[str, Any]:
         try:
             return await self._request("DELETE", f"/portfolio/orders/{order_id}")
