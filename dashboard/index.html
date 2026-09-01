@@ -15,6 +15,7 @@
       <p id="login-subtitle">Log in to your dashboard</p>
       <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" required minlength="8" />
       <input type="password" id="login-password2" placeholder="Confirm password" autocomplete="new-password" hidden minlength="8" />
+      <input type="password" id="login-pin" placeholder="PIN" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]*" hidden />
       <button type="submit" class="btn primary" id="login-submit">Log In</button>
       <div id="login-error" class="login-error"></div>
     </form>
@@ -163,6 +164,22 @@
         </form>
       </section>
 
+      <!-- Dashboard security -->
+      <section class="panel">
+        <h2>Dashboard Security</h2>
+        <div id="pin-status" class="cred-status"></div>
+        <form id="pin-form">
+          <label>Current password
+            <input type="password" name="password" autocomplete="current-password" required minlength="8" />
+          </label>
+          <label>New PIN (blank removes it)
+            <input type="password" name="pin" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]*" placeholder="4-12 digits" />
+          </label>
+          <button type="submit" class="btn primary">Save PIN</button>
+          <span id="pin-result"></span>
+        </form>
+      </section>
+
       <!-- Settings -->
       <section class="panel span2">
         <h2>Settings</h2>
@@ -211,6 +228,9 @@
           </label>
           <label>Swing: Dip to Buy (cents)
             <input type="number" name="swing_drop_cents" min="2" max="50" />
+          </label>
+          <label>Swing: Min Volume (0 = watch all)
+            <input type="number" name="swing_min_volume" min="0" />
           </label>
           <label>Swing: Lookback (seconds)
             <input type="number" name="swing_lookback_seconds" min="30" max="3600" />

@@ -162,6 +162,13 @@ class Database:
                 row.value = value
             s.commit()
 
+    def delete_kv(self, key: str) -> None:
+        with self.session() as s:
+            row = s.get(SettingsRow, key)
+            if row is not None:
+                s.delete(row)
+                s.commit()
+
     # ── Writes ────────────────────────────────────────────────────────
 
     def log_activity(self, message: str, level: str = "info", source: str = "system") -> ActivityLog:

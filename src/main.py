@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,21 @@ async def require_login(request: Request, call_next):
 
 class PasswordBody(BaseModel):
     password: str
+    pin: str | None = None
+
+
+class PinBody(BaseModel):
+    """Set, change, or (with an empty pin) remove the second factor."""
+
+    password: str
+    pin: str = ""
+
+
+# Reaching the dashboard over anything but localhost means the cookie should
+# never travel in the clear. It defaults off because the documented setup is
+# http://127.0.0.1, where a secure cookie would simply be dropped and lock
+# you out; set COOKIE_SECURE=true whenever the dashboard is served over TLS.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _set_session_cookie(response: Response) -> None:
@@ -68,8 +84,20 @@ def _set_session_cookie(response: Response) -> None:
         auth.issue_token(),
         httponly=True,
         samesite="lax",
+        secure=COOKIE_SECURE,
         max_age=7 * 24 * 3600,
     )
+
+
+def _guard_lockout() -> None:
+    """Refuse a login attempt while the throttle window is open."""
+    remaining = auth.lockout_remaining()
+    if remaining:
+        raise HTTPException(
+            429,
+            f"too many failed attempts — try again in {remaining}s",
+            headers={"Retry-After": str(remaining)},
+        )
 
 
 @app.get("/api/auth/status")
@@ -77,6 +105,8 @@ async def auth_status(request: Request) -> dict[str, Any]:
     return {
         "setup_required": not auth.is_configured(),
         "authenticated": auth.verify_token(request.cookies.get(COOKIE_NAME)),
+        "pin_required": auth.has_pin(),
+        "locked_out_seconds": auth.lockout_remaining(),
     }
 
 
@@ -86,9 +116,14 @@ async def auth_setup(body: PasswordBody, response: Response) -> dict[str, Any]:
         raise HTTPException(409, "password already set — log in instead")
     try:
         auth.set_password(body.password)
+        if body.pin:
+            auth.set_pin(body.pin)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    db.record_audit("auth_password_created", {}, actor="dashboard")
+    db.record_audit(
+        "auth_password_created", {"pin_set": bool(body.pin)}, actor="dashboard"
+    )
+    auth.register_success()
     _set_session_cookie(response)
     return {"ok": True}
 
@@ -97,10 +132,36 @@ async def auth_setup(body: PasswordBody, response: Response) -> dict[str, Any]:
 async def auth_login(body: PasswordBody, response: Response) -> dict[str, Any]:
     if not auth.is_configured():
         raise HTTPException(409, "no password set — run setup first")
-    if not auth.verify_password(body.password):
-        raise HTTPException(401, "incorrect password")
+    _guard_lockout()
+    if not auth.verify_credentials(body.password, body.pin):
+        auth.register_failure()
+        db.record_audit("auth_login_failed", {}, actor="dashboard")
+        # Deliberately does not say which factor was wrong.
+        raise HTTPException(401, "incorrect password or PIN")
+    auth.register_success()
     _set_session_cookie(response)
     return {"ok": True}
+
+
+@app.post("/api/auth/pin")
+async def auth_set_pin(body: PinBody) -> dict[str, Any]:
+    """Set, change, or clear the PIN. Requires the current password, so a
+    borrowed session alone cannot weaken the second factor."""
+    _guard_lockout()
+    if not auth.verify_password(body.password):
+        auth.register_failure()
+        raise HTTPException(401, "incorrect password")
+    auth.register_success()
+    try:
+        if body.pin:
+            auth.set_pin(body.pin)
+        else:
+            auth.clear_pin()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    auth.revoke_all_sessions()  # force a re-login under the new factor
+    db.record_audit("auth_pin_changed", {"enabled": bool(body.pin)}, actor="dashboard")
+    return {"ok": True, "pin_required": auth.has_pin()}
 
 
 @app.post("/api/auth/logout")
@@ -242,6 +303,7 @@ class SettingsPatch(BaseModel):
     swing_series: str | None = None
     swing_drop_cents: int | None = None
     swing_lookback_seconds: int | None = None
+    swing_min_volume: int | None = None
     swing_max_spread_cents: int | None = None
     swing_price_band_low: int | None = None
     swing_price_band_high: int | None = None
@@ -364,6 +426,7 @@ async def debug_swing() -> dict[str, Any]:
                 settings.swing_price_band_high,
             ],
             "max_positions": settings.swing_max_positions,
+            "min_volume": settings.swing_min_volume,
         },
         "positions_held": positions_held,
         "positions_error": positions_error,

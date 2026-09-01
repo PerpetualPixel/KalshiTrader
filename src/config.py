@@ -119,6 +119,14 @@ class BotSettings(BaseModel):
         default=5, ge=2, le=50,
         description="Ask must fall this much within the lookback window to trigger a dip buy",
     )
+    swing_min_volume: int = Field(
+        default=0, ge=0,
+        description=(
+            "Skip markets that have traded less than this. Kalshi reports a "
+            "match scheduled for tomorrow as 'open', and a market nobody is "
+            "trading never moves, so 0 watches hundreds of inert books"
+        ),
+    )
     swing_lookback_seconds: int = Field(
         default=300, ge=30, le=3600,
         description="Window the ask's recent high is measured over when sizing a dip",
