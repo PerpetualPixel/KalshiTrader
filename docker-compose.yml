@@ -1,0 +1,26 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      DB_PATH: /app/data/kalshitrader.db
+      MANUAL_ESTIMATES_PATH: /app/data/estimates.json
+    volumes:
+      - ./data:/app/data
+      # mount your key read-only and point KALSHI_PRIVATE_KEY_PATH at it in .env
+      - ./kalshi-private-key.pem:/app/kalshi-private-key.pem:ro
+    command: ["kalshitrader", "run"]
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    env_file: .env
+    environment:
+      DB_PATH: /app/data/kalshitrader.db
+      MANUAL_ESTIMATES_PATH: /app/data/estimates.json
+    volumes:
+      - ./data:/app/data
+    command: ["kalshitrader", "dashboard", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    restart: unless-stopped

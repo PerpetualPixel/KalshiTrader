@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232a78d6'/%3E%3Cpath d='M4 11l3-4 2 2 3-5' stroke='white' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<title>KalshiTrader</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6; --pos: #2a78d6; --neg: #e34948; --good: #006300; --bad: #d03b3b; --warn: #fab219;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --page: #0d0d0d; --surface: #1a1a19; --ink: #fff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5; --pos: #3987e5; --neg: #e66767; --good: #0ca30c; --bad: #d03b3b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); }
+  .pill.live { border-color: var(--bad); color: var(--bad); }
+  .pill.halted { border-color: var(--warn); color: var(--ink); }
+  header .spacer { flex: 1; }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--ink-2); }
+  button.danger { color: var(--bad); }
+  main { padding: 20px 24px 48px; max-width: 1400px; margin: 0 auto; display: grid; gap: 20px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .label { font-size: 12px; color: var(--ink-2); }
+  .tile .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .tile.hero { grid-column: span 2; }
+  .tile.hero .value { font-size: 44px; line-height: 1.1; }
+  @media (max-width: 600px) { .tile.hero { grid-column: span 1; } .tile.hero .value { font-size: 32px; } }
+  .tile .delta { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+  .up { color: var(--good); } .down { color: var(--bad); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .4px; }
+  .row { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+  .chart { position: relative; height: 260px; }
+  .chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  .chart .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--ink); box-shadow: 0 2px 8px rgba(0,0,0,.12); transform: translate(-50%, -110%); white-space: nowrap; }
+  .chart .hit { fill: transparent; }
+  .tablewrap.tall { max-height: 520px; overflow-y: auto; }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.wrap { white-space: normal; max-width: 420px; }
+  pre.sig { margin: 0; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; color: var(--ink); }
+  .empty { color: var(--muted); padding: 14px 0; }
+  .form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--page); color: var(--ink); }
+  input[type=text] { min-width: 180px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .warnbox { background: var(--surface); border: 1px solid var(--warn); border-radius: 10px; padding: 10px 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KalshiTrader</h1>
+  <span id="mode" class="pill">–</span>
+  <span id="env" class="pill">–</span>
+  <span id="halt" class="pill" hidden>HALTED</span>
+  <span id="last" class="muted"></span>
+  <div class="spacer"></div>
+  <button id="btn-halt" class="danger">Halt</button>
+  <button id="btn-resume" hidden>Resume</button>
+  <button id="btn-refresh">Refresh</button>
+</header>
+<main>
+  <section class="tiles" id="tiles"></section>
+
+  <div class="row">
+    <div class="card">
+      <h2>Equity curve</h2>
+      <div class="chart" id="equityChart"></div>
+    </div>
+    <div class="card">
+      <h2>P&amp;L per closed trade</h2>
+      <div class="legend"><span><i style="background:var(--pos)"></i>Gain</span><span><i style="background:var(--neg)"></i>Loss</span></div>
+      <div class="chart" id="pnlChart"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Open positions</h2>
+    <div class="tablewrap"><table id="open"><thead><tr>
+      <th>Ticker</th><th>Title</th><th>Side</th><th class="num">Entry</th><th class="num">Qty</th><th class="num">TP</th><th class="num">SL</th><th class="num">P_true</th><th>Opened</th><th>Closes</th>
+    </tr></thead><tbody></tbody></table></div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2>Latest signals</h2>
+      <div class="tablewrap tall"><table id="signals"><thead><tr><th>When</th><th>Signal</th><th>Exec</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Manual P_true estimates</h2>
+      <form class="form" id="estform">
+        <input type="text" name="ticker" placeholder="TICKER" required>
+        <input type="number" name="p_yes" placeholder="P(yes)" min="0" max="1" step="0.01" required style="width:90px">
+        <input type="number" name="confidence" placeholder="conf" min="0" max="1" step="0.05" value="0.8" style="width:80px">
+        <input type="text" name="note" placeholder="note (optional)">
+        <button type="submit">Save</button>
+      </form>
+      <div class="tablewrap"><table id="estimates"><thead><tr><th>Ticker</th><th class="num">P(yes)</th><th class="num">Conf</th><th>Note</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Closed trades</h2>
+    <div class="tablewrap"><table id="closed"><thead><tr>
+      <th>Ticker</th><th>Side</th><th class="num">Entry</th><th class="num">Exit</th><th class="num">Qty</th><th class="num">Fees</th><th class="num">P&amp;L</th><th>Reason</th><th>Closed</th>
+    </tr></thead><tbody></tbody></table></div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2>Watched markets (latest snapshot)</h2>
+      <div class="tablewrap"><table id="markets"><thead><tr><th>Ticker</th><th class="num">Yes bid</th><th class="num">Yes ask</th><th class="num">Spread</th><th class="num">Last</th><th class="num">Vol 24h</th><th>As of</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Recent cycles</h2>
+      <div class="tablewrap"><table id="runs"><thead><tr><th>When</th><th class="num">Markets</th><th class="num">Signals</th><th class="num">Opened</th><th class="num">Closed</th><th class="num">ms</th><th>Error</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmtUsd = (n) => (n == null ? '–' : (n < 0 ? '-' : '') + '$' + Math.abs(n).toFixed(2));
+const fmtPct = (n) => (n == null ? '–' : (n * 100).toFixed(1) + '%');
+const fmtTs = (s) => (s ? s.replace('T', ' ').replace(/\+00:00|Z/, '').slice(5, 16) : '–');
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sign = (n) => (n > 0 ? 'up' : n < 0 ? 'down' : '');
+let lastEquity = [], lastTrades = [];
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(path + ' -> ' + r.status);
+  return r.json();
+}
+
+function tile(label, value, cls = '', delta = '', hero = false) {
+  return `<div class="tile ${hero ? 'hero' : ''}"><div class="label">${label}</div><div class="value ${cls}">${value}</div>${delta ? `<div class="delta">${delta}</div>` : ''}</div>`;
+}
+
+function renderSummary(s) {
+  const m = s.metrics;
+  $('#mode').textContent = s.mode.toUpperCase();
+  $('#mode').className = 'pill' + (s.mode === 'live' ? ' live' : '');
+  $('#env').textContent = s.env;
+  $('#halt').hidden = !s.halted;
+  $('#btn-halt').hidden = s.halted;
+  $('#btn-resume').hidden = !s.halted;
+  $('#last').textContent = s.last_cycle ? `last cycle ${fmtTs(s.last_cycle.ts)} · ${s.last_cycle.markets} markets · ${s.last_cycle.signals} signals${s.last_cycle.error ? ' · ERROR' : ''}` : 'no cycles yet';
+  const pf = isFinite(m.profit_factor) ? m.profit_factor.toFixed(2) : '∞';
+  const sig = s.signals_24h || {};
+  const buys = (sig['BUY YES'] || 0) + (sig['BUY NO'] || 0);
+  $('#tiles').innerHTML = [
+    tile('Equity', fmtUsd(m.equity), '', s.starting_cash != null ? `${fmtPct(m.total_return)} since start · cash ${fmtUsd(m.cash)}` : `cash ${fmtUsd(m.cash)}`, true),
+    tile('Realized P&L', fmtUsd(m.realized_pnl), sign(m.realized_pnl), `today ${fmtUsd(m.daily_pnl)} · 7d ${fmtUsd(m.week_pnl)}`),
+    tile('Unrealized P&L', fmtUsd(m.unrealized_pnl), sign(m.unrealized_pnl), `${m.trades_open} open`),
+    tile('Win rate', fmtPct(m.win_rate), '', `${m.wins}W / ${m.losses}L of ${m.trades_closed}`),
+    tile('Profit factor', pf, '', `expectancy ${fmtUsd(m.expectancy)}/trade`),
+    tile('Max drawdown', fmtUsd(-m.max_drawdown), m.max_drawdown > 0 ? 'down' : '', fmtPct(m.max_drawdown_pct)),
+    tile('Sharpe (ann.)', m.sharpe.toFixed(2), '', `fees ${fmtUsd(m.total_fees)}`),
+    tile('Signals 24h', buys, '', `${sig['PASS'] || 0} passes logged · ${m.consecutive_losses} consec. losses`),
+  ].join('');
+}
+
+// ---- tiny SVG chart kit (no external dependencies) --------------------------
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs = {}, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function niceTicks(min, max, n = 4) {
+  if (max === min) { max = min + 1; min = min - 1; }
+  const span = max - min, raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((st) => span / st <= n) || 10 * mag;
+  const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step, out = [];
+  for (let v = lo; v <= hi + 1e-9; v += step) out.push(+v.toFixed(6));
+  return out;
+}
+function frame(host) {
+  host.innerHTML = '';
+  const W = host.clientWidth || 600, H = host.clientHeight || 260, pad = { l: 56, r: 12, t: 10, b: 24 };
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none' }, host);
+  const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; host.appendChild(tip);
+  return { svg, tip, W, H, pad, iw: W - pad.l - pad.r, ih: H - pad.t - pad.b };
+}
+function yAxis(f, ticks, y) {
+  for (const t of ticks) {
+    el('line', { x1: f.pad.l, x2: f.W - f.pad.r, y1: y(t), y2: y(t), stroke: css('--grid'), 'stroke-width': 1 }, f.svg);
+    const lbl = el('text', { x: f.pad.l - 8, y: y(t) + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--muted') }, f.svg);
+    lbl.textContent = '$' + Number(t).toLocaleString();
+  }
+}
+function showTip(f, html, x, y) { f.tip.innerHTML = html; f.tip.style.left = x + 'px'; f.tip.style.top = y + 'px'; f.tip.hidden = false; }
+
+function renderEquity(rows) {
+  const host = $('#equityChart');
+  if (!rows.length) { host.innerHTML = '<div class="empty">No equity marks yet. Run a cycle.</div>'; return; }
+  const f = frame(host), vals = rows.map((r) => r.equity);
+  const ticks = niceTicks(Math.min(...vals), Math.max(...vals));
+  const y = (v) => f.pad.t + f.ih * (1 - (v - ticks[0]) / (ticks[ticks.length - 1] - ticks[0]));
+  const x = (i) => f.pad.l + (rows.length === 1 ? f.iw / 2 : (f.iw * i) / (rows.length - 1));
+  yAxis(f, ticks, y);
+  const pts = rows.map((r, i) => [x(i), y(r.equity)]);
+  const path = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  const base = y(ticks[0]);
+  el('path', { d: `${path} L${pts[pts.length - 1][0]} ${base} L${pts[0][0]} ${base} Z`, fill: css('--series-1'), 'fill-opacity': 0.1 }, f.svg);
+  el('path', { d: path, fill: 'none', stroke: css('--series-1'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.svg);
+  const step = Math.max(1, Math.floor(rows.length / 6));
+  rows.forEach((r, i) => { if ((i % step === 0 && rows.length - 1 - i >= step / 2) || i === rows.length - 1) { const t = el('text', { x: x(i), y: f.H - 6, 'text-anchor': i === rows.length - 1 ? 'end' : i === 0 ? 'start' : 'middle', 'font-size': 11, fill: css('--muted') }, f.svg); t.textContent = fmtTs(r.ts); } });
+  const last = pts[pts.length - 1];
+  el('circle', { cx: last[0], cy: last[1], r: 6, fill: css('--surface') }, f.svg);
+  el('circle', { cx: last[0], cy: last[1], r: 4, fill: css('--series-1') }, f.svg);
+  const cross = el('line', { y1: f.pad.t, y2: f.pad.t + f.ih, stroke: css('--axis'), 'stroke-width': 1, visibility: 'hidden' }, f.svg);
+  const dot = el('circle', { r: 4, fill: css('--series-1'), stroke: css('--surface'), 'stroke-width': 2, visibility: 'hidden' }, f.svg);
+  const hit = el('rect', { x: f.pad.l, y: f.pad.t, width: f.iw, height: f.ih, class: 'hit' }, f.svg);
+  hit.addEventListener('mousemove', (ev) => {
+    const rect = host.getBoundingClientRect(), px = ((ev.clientX - rect.left) / rect.width) * f.W;
+    const i = Math.max(0, Math.min(rows.length - 1, Math.round(((px - f.pad.l) / f.iw) * (rows.length - 1))));
+    cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+    dot.setAttribute('cx', x(i)); dot.setAttribute('cy', y(rows[i].equity)); dot.setAttribute('visibility', 'visible');
+    showTip(f, `<b>${fmtUsd(rows[i].equity)}</b> · ${fmtTs(rows[i].ts)}<br>cash ${fmtUsd(rows[i].cash)} · unrealized ${fmtUsd(rows[i].unrealized_pnl)} · ${rows[i].open_positions} open`, (x(i) / f.W) * rect.width, (y(rows[i].equity) / f.H) * rect.height - 8);
+  });
+  hit.addEventListener('mouseleave', () => { f.tip.hidden = true; cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); });
+}
+
+function renderPnl(trades) {
+  const host = $('#pnlChart');
+  const closed = trades.filter((t) => t.status !== 'open' && t.pnl != null).slice(0, 40).reverse();
+  if (!closed.length) { host.innerHTML = '<div class="empty">No closed trades yet.</div>'; return; }
+  const f = frame(host), vals = closed.map((t) => t.pnl);
+  const ticks = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals));
+  const y = (v) => f.pad.t + f.ih * (1 - (v - ticks[0]) / (ticks[ticks.length - 1] - ticks[0]));
+  yAxis(f, ticks, y);
+  const zero = y(0);
+  el('line', { x1: f.pad.l, x2: f.W - f.pad.r, y1: zero, y2: zero, stroke: css('--axis'), 'stroke-width': 1 }, f.svg);
+  const slot = f.iw / closed.length, bw = Math.min(24, slot - 2), r = Math.min(4, bw / 2);
+  closed.forEach((t, i) => {
+    const cx = f.pad.l + slot * i + slot / 2, top = Math.min(zero, y(t.pnl)), h = Math.abs(zero - y(t.pnl)), up = t.pnl >= 0;
+    const x0 = cx - bw / 2, x1 = cx + bw / 2;
+    // rounded at the data end, square at the baseline
+    const d = up
+      ? `M${x0} ${zero} V${top + r} Q${x0} ${top} ${x0 + r} ${top} H${x1 - r} Q${x1} ${top} ${x1} ${top + r} V${zero} Z`
+      : `M${x0} ${zero} V${zero + h - r} Q${x0} ${zero + h} ${x0 + r} ${zero + h} H${x1 - r} Q${x1} ${zero + h} ${x1} ${zero + h - r} V${zero} Z`;
+    el('path', { d: h < r ? `M${x0} ${zero} H${x1} V${up ? zero - Math.max(h, 1) : zero + Math.max(h, 1)} H${x0} Z` : d, fill: css(up ? '--pos' : '--neg') }, f.svg);
+    const hit = el('rect', { x: f.pad.l + slot * i, y: f.pad.t, width: slot, height: f.ih, class: 'hit' }, f.svg);
+    hit.addEventListener('mouseenter', () => { const rect = host.getBoundingClientRect(); showTip(f, `<b>${fmtUsd(t.pnl)}</b> ${esc(t.ticker)}<br>${t.side.toUpperCase()} ${t.entry_price}¢ → ${t.exit_price}¢ ×${t.count} · ${esc(t.exit_reason)}`, (cx / f.W) * rect.width, (top / f.H) * rect.height - 6); });
+    hit.addEventListener('mouseleave', () => { f.tip.hidden = true; });
+  });
+}
+window.addEventListener('resize', () => { renderEquity(lastEquity); renderPnl(lastTrades); });
+
+function fill(tableSel, rows, rowFn, empty = 'Nothing yet.') {
+  const tb = $(tableSel + ' tbody');
+  tb.innerHTML = rows.length ? rows.map(rowFn).join('') : `<tr><td colspan="12" class="empty">${empty}</td></tr>`;
+}
+
+async function refresh() {
+  try {
+    const [summary, equity, trades, signals, markets, runs, estimates] = await Promise.all([
+      api('/api/summary'), api('/api/equity?limit=2000'), api('/api/trades?limit=300'),
+      api('/api/signals?limit=40'), api('/api/markets?limit=40'), api('/api/runs?limit=15'), api('/api/estimates'),
+    ]);
+    renderSummary(summary);
+    lastEquity = equity; lastTrades = trades;
+    renderEquity(equity);
+    renderPnl(trades);
+    fill('#open', trades.filter((t) => t.status === 'open'), (t) => `<tr><td>${esc(t.ticker)}</td><td class="wrap">${esc(t.title)}</td><td>${t.side.toUpperCase()}</td><td class="num">${t.entry_price}¢</td><td class="num">${t.count}</td><td class="num">${t.take_profit}¢</td><td class="num">${t.stop_loss}¢</td><td class="num">${t.p_true != null ? t.p_true.toFixed(2) : '–'}</td><td>${fmtTs(t.opened_at)}</td><td>${fmtTs(t.close_time)}</td></tr>`, 'No open positions.');
+    fill('#signals', signals, (s) => `<tr><td>${fmtTs(s.created_at)}</td><td><pre class="sig">${esc(s.formatted)}</pre></td><td>${s.executed ? '✓' : ''}</td></tr>`, 'No signals logged yet.');
+    fill('#closed', trades.filter((t) => t.status !== 'open'), (t) => `<tr><td>${esc(t.ticker)}</td><td>${t.side.toUpperCase()}</td><td class="num">${t.entry_price}¢</td><td class="num">${t.exit_price}¢</td><td class="num">${t.count}</td><td class="num">${fmtUsd(t.fees)}</td><td class="num ${sign(t.pnl)}">${fmtUsd(t.pnl)}</td><td>${esc(t.exit_reason)}</td><td>${fmtTs(t.closed_at)}</td></tr>`, 'No closed trades yet.');
+    fill('#markets', markets, (m) => `<tr><td>${esc(m.ticker)}</td><td class="num">${m.yes_bid}¢</td><td class="num">${m.yes_ask}¢</td><td class="num">${m.yes_ask - m.yes_bid}¢</td><td class="num">${m.last_price}¢</td><td class="num">${m.volume_24h}</td><td>${fmtTs(m.ts)}</td></tr>`, 'No market snapshots yet. Run a scan.');
+    fill('#runs', runs, (r) => `<tr><td>${fmtTs(r.ts)}</td><td class="num">${r.markets_scanned}</td><td class="num">${r.signals}</td><td class="num">${r.trades_opened}</td><td class="num">${r.trades_closed}</td><td class="num">${r.duration_ms}</td><td class="wrap ${r.error ? 'down' : ''}">${esc(r.error || '')}</td></tr>`, 'No cycles recorded yet.');
+    const est = Object.entries(estimates);
+    fill('#estimates', est, ([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${v.p_yes.toFixed(2)}</td><td class="num">${(v.confidence ?? 0).toFixed(2)}</td><td class="wrap">${esc(v.note || '')}</td><td><button data-del="${esc(k)}">✕</button></td></tr>`, 'None. Add one above or run <code>kalshitrader estimate TICKER 0.62</code>.');
+  } catch (e) {
+    console.error(e);
+    $('#last').textContent = 'refresh failed: ' + e.message;
+  }
+}
+
+$('#btn-refresh').onclick = refresh;
+$('#btn-halt').onclick = async () => { if (confirm('Halt new entries? Open positions keep their exits.')) { await api('/api/control/halt', { method: 'POST' }); refresh(); } };
+$('#btn-resume').onclick = async () => { await api('/api/control/resume', { method: 'POST' }); refresh(); };
+$('#estform').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  await api('/api/estimates', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticker: f.get('ticker'), p_yes: +f.get('p_yes'), confidence: +(f.get('confidence') || 0.8), note: f.get('note') || '' }) });
+  ev.target.reset(); ev.target.confidence.value = '0.8'; refresh();
+};
+$('#estimates').onclick = async (ev) => {
+  const t = ev.target.closest('button[data-del]');
+  if (t) { await api('/api/estimates/' + encodeURIComponent(t.dataset.del), { method: 'DELETE' }); refresh(); }
+};
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

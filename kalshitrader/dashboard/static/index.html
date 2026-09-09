@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KalshiTrader</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23c9e223'/%3E%3Cpath d='M3 4c3 1 4 5 2 9M13 4c-3 1-4 5-2 9' stroke='white' stroke-width='1.4' fill='none'/%3E%3C/svg%3E">
+<style>
+  :root { color-scheme: light dark;
+    --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781; --line:#e1e0d9; --border:rgba(11,11,11,.10);
+    --accent:#2a78d6; --good:#006300; --bad:#d03b3b; --warn:#fab219; --live:#e34948; }
+  @media (prefers-color-scheme: dark) { :root { --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink2:#c3c2b7; --muted:#898781; --line:#2c2c2a; --border:rgba(255,255,255,.10);
+    --accent:#3987e5; --good:#0ca30c; --bad:#e66767; --live:#e66767; } }
+  * { box-sizing:border-box } body { margin:0; background:var(--page); color:var(--ink); font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif }
+  header { display:flex; align-items:center; gap:12px; padding:14px 22px; background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:5; flex-wrap:wrap }
+  header h1 { font-size:17px; margin:0; font-weight:650 } header .sp { flex:1 }
+  .pill { font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--border); color:var(--ink2); display:inline-flex; align-items:center; gap:6px }
+  .pill i { width:8px; height:8px; border-radius:50%; background:var(--muted); display:inline-block } .pill.on i { background:var(--good) } .pill.off i { background:var(--bad) }
+  .pill.live { border-color:var(--live); color:var(--live) } .money { font-weight:650; font-size:15px }
+  button { font:inherit; padding:7px 13px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--ink); cursor:pointer } button:hover { border-color:var(--ink2) }
+  button.primary { background:var(--accent); color:#fff; border-color:transparent } button.danger { color:var(--bad) } button.icon { width:36px; padding:7px 0; text-align:center; font-weight:700 }
+  main { max-width:1100px; margin:0 auto; padding:20px 22px 60px; display:grid; gap:22px }
+  h2 { font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:var(--ink2); margin:0 0 10px; display:flex; align-items:center; gap:8px }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px }
+  .pos { display:grid; grid-template-columns:1.5fr repeat(7, 1fr) auto; gap:10px; align-items:center; padding:12px 0; border-top:1px solid var(--line) } .pos:first-of-type { border-top:0 }
+  .pos .m { font-weight:600 } .pos .s { color:var(--ink2); font-size:13px } .k { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px } .v { font-size:17px; font-weight:600; font-variant-numeric:tabular-nums }
+  .up { color:var(--good) } .down { color:var(--bad) }
+  .cashout { background:var(--card2,#222); color:var(--ink); border:1px solid var(--line); border-radius:8px;
+             padding:7px 12px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap }
+  .cashout:hover:not(:disabled) { border-color:var(--bad); color:var(--bad) }
+  .cashout:disabled { opacity:.55; cursor:default }
+  table { width:100%; border-collapse:collapse; font-size:14px } th,td { text-align:left; padding:8px 8px; border-bottom:1px solid var(--line); vertical-align:top } th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.4px; font-weight:500 }
+  td.num { text-align:right; font-variant-numeric:tabular-nums } .why { color:var(--ink2); font-size:12.5px }
+  .empty { color:var(--muted); padding:16px 0 } .foot { color:var(--muted); font-size:12.5px } .foot a { color:var(--accent) }
+  .badge { font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid var(--line); color:var(--ink2) } .badge.live { border-color:var(--live); color:var(--live); font-weight:600 }
+  .badge.buy { border-color:var(--good); color:var(--good); font-weight:600 }
+  /* drawer */
+  .drawer { position:fixed; top:0; right:0; height:100%; width:min(480px, 100%); background:var(--surface); border-left:1px solid var(--border); box-shadow:-8px 0 30px rgba(0,0,0,.15); transform:translateX(100%); transition:transform .2s; z-index:10; overflow-y:auto; padding:18px 20px 40px }
+  .drawer.open { transform:none } .drawer h3 { margin:18px 0 8px; font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:var(--ink2) }
+  .drawer .top { display:flex; align-items:center; gap:10px } .drawer .top h2 { margin:0; font-size:15px; text-transform:none; letter-spacing:0; color:var(--ink) }
+  .row { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--line) } .row label { flex:1; display:flex; align-items:center; gap:6px }
+  .row input[type=number], .row input[type=text], .row input[type=password], .row select { width:130px; font:inherit; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--page); color:var(--ink) }
+  .row input[type=checkbox] { width:18px; height:18px } textarea { width:100%; font:12px ui-monospace,monospace; min-height:110px; padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--page); color:var(--ink) }
+  .q { display:inline-flex; width:17px; height:17px; border-radius:50%; border:1px solid var(--border); color:var(--muted); font-size:11px; align-items:center; justify-content:center; cursor:help; position:relative; flex:none }
+  .q::before { content:"?" }
+  .q:hover::after, .q:focus::after { content:attr(data-help); position:absolute; left:22px; top:-6px; width:260px; background:var(--ink); color:var(--page); padding:8px 10px; border-radius:8px; font-size:12.5px; line-height:1.4; z-index:20; box-shadow:0 4px 16px rgba(0,0,0,.25) }
+  .actions { display:flex; gap:8px; margin:12px 0 } .msg { font-size:13px; color:var(--ink2); min-height:18px } .msg.err { color:var(--bad) }
+  .guide dt { font-weight:600; margin-top:10px } .guide dd { margin:2px 0 0; color:var(--ink2); font-size:13.5px }
+  .scrim { position:fixed; inset:0; background:rgba(0,0,0,.25); z-index:9; display:none } .scrim.open { display:block }
+  @keyframes flash { from { background:var(--accent); color:#fff } to { background:transparent } }
+  td.flash { animation: flash 1.1s ease-out }
+  .badge.pre { border-color:var(--muted); color:var(--muted) } .badge.closed { opacity:.55 }
+  #counts { color:var(--ink2); font-size:12.5px }
+  .livebar { position:sticky; top:0; z-index:40; background:var(--bad); color:#fff; font-weight:600; text-align:center; padding:8px 16px; font-size:13.5px; letter-spacing:.2px }
+  .toast { position:fixed; left:50%; top:14px; transform:translateX(-50%) translateY(-30px); opacity:0; transition:all .2s; z-index:50; background:var(--ink); color:var(--page); padding:10px 16px; border-radius:10px; font-size:14px; box-shadow:0 6px 24px rgba(0,0,0,.3); max-width:min(640px, 92vw); pointer-events:none }
+  .toast.show { transform:translateX(-50%) translateY(0); opacity:1 } .toast.err { background:var(--bad); color:#fff } .toast.ok { background:var(--good); color:#fff }
+  .tabs { display:flex; gap:4px; padding:0 22px; background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:57px; z-index:4 }
+  .tab { padding:10px 16px; border:0; border-bottom:2px solid transparent; background:none; color:var(--ink2); font-size:14px; border-radius:0; cursor:pointer }
+  .tab:hover { color:var(--ink); border-color:var(--line) }
+  .tab.on { color:var(--ink); border-color:var(--accent); font-weight:600 }
+  .profiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:10px }
+  .mkt-cat { margin:14px 0 6px; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px }
+  .mkt-row { display:flex; flex-wrap:wrap; gap:8px }
+  .mkt { display:flex; flex-direction:column; gap:2px; align-items:flex-start; text-align:left; cursor:pointer;
+         background:var(--card2,#1b1b1b); border:1px solid var(--line); border-radius:10px; padding:8px 12px;
+         color:var(--ink); font:inherit; min-width:150px }
+  .mkt:hover { border-color:var(--ink2) }
+  .mkt.on { border-color:var(--good); background:color-mix(in srgb, var(--good) 12%, transparent) }
+  .mkt .t { font-weight:600; font-size:13px; font-variant-numeric:tabular-nums }
+  .mkt .d { font-size:11px; color:var(--muted) }
+  .mkt.dead .t { color:var(--muted) }
+  .mini { background:var(--card2,#222); color:var(--ink); border:1px solid var(--line); border-radius:8px;
+          padding:4px 10px; font-size:12px; cursor:pointer; margin-left:8px; vertical-align:middle }
+  .mini:hover:not(:disabled) { border-color:var(--ink2) } .mini:disabled { opacity:.55; cursor:default }
+  .profile { text-align:left; padding:12px 14px; border-radius:10px; border:1px solid var(--border); background:var(--page); cursor:pointer }
+  .profile:hover { border-color:var(--accent) } .profile.on { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent) }
+  .profile b { display:block; font-size:14px; margin-bottom:3px } .profile span { color:var(--ink2); font-size:12.5px; line-height:1.35 }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:12px }
+  .stat { background:var(--page); border:1px solid var(--border); border-radius:10px; padding:10px 12px }
+  .stat .k { margin-bottom:2px } .stat .v { font-size:20px }
+  .chart { position:relative; height:220px } .chart svg { width:100%; height:100%; display:block; overflow:visible }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:13.5px; margin:8px 0 } .kv b { color:var(--ink2); font-weight:500 }
+  @media (max-width:1100px) { .pos { grid-template-columns:1fr 1fr 1fr 1fr } }
+  @media (max-width:760px) { .pos { grid-template-columns:1fr 1fr } }
+</style>
+</head>
+<body>
+<div class="livebar" id="livebar" hidden>REAL MONEY — Execution is set to live. Orders placed here spend your Kalshi balance. Switch to paper in Settings to practise.</div>
+<header>
+  <h1>KalshiTrader <span style="color:var(--muted);font-weight:500">Kalshi markets</span></h1>
+  <span id="status" class="pill"><i></i>–</span>
+  <span id="mode" class="pill">–</span>
+  <span id="keys" class="pill" title="Whether a Kalshi API key is saved. Click Settings to add or test it.">–</span>
+  <span id="equity" class="money">–</span>
+  <span id="pnl" class="foot"></span>
+  <span id="counts"></span>
+  <div class="sp"></div>
+  <button id="btn-pause" class="danger" title="Stop opening new positions. Open positions keep their sell targets and stops.">Pause bot</button>
+  <button id="btn-resume" class="primary" hidden title="Allow the bot to open new positions again.">Resume bot</button>
+  <button id="btn-settings" title="Settings, API keys, screenshot analysis">⚙ Settings</button>
+  <button id="btn-guide" class="icon" title="What everything on this screen means">?</button>
+</header>
+
+<nav class="tabs">
+  <button class="tab on" data-tab="trading">Trading</button>
+  <button class="tab" data-tab="tracking">Tracking</button>
+</nav>
+<main>
+<section id="tab-trading">
+  <section class="card">
+    <h2>Open positions <span class="q" tabindex="0" data-help="Each row is one side the bot has bought in one market. Staked is the cash in that position; If it wins and If stopped are what you actually gain or lose in dollars when the target or the stop is reached, both after Kalshi&#39;s exit fee. Cash out sells the position on the bot&#39;s next scan, whatever the price - the bot must be running for it to fill."></span></h2>
+    <div id="positions"></div>
+  </section>
+
+  <section class="card" id="markets-card">
+    <h2>Markets <span class="q" tabindex="0" data-help="Every series the bot found on Kalshi, biggest first. Switch one on and the bot scans and trades it; switch it off and it stops opening new positions there. Volume is the last 24 hours across the whole series, and Liquid counts the markets with a two-sided quote - a series with none of those cannot be traded however large it looks. Scan the exchange to refresh the list."></span>
+      <button id="discover" class="mini">Scan the exchange</button>
+      <span id="markets-when" class="s"></span></h2>
+    <div id="markets"></div>
+  </section>
+
+  <section class="card" id="blockers-card" hidden>
+    <h2>Why nothing is being bought <span class="q" tabindex="0" data-help="Every side of every market the bot looked at and passed on, grouped by reason, most common first. Numbers are replaced with # so the same reason counts once. If one row covers nearly every check, that rule is what stands between you and a trade."></span></h2>
+    <div style="overflow-x:auto"><table id="blockers"><thead><tr><th class="num">Checks</th><th>Reason the bot passed</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Markets being watched <span class="q" tabindex="0" data-help="Every contest found in the markets you switched on. LIVE means contracts actually traded recently (the count beside it), which is what the bot trusts rather than a scheduled start time. Form and comeback are the tennis analyst's 0-10 scores and stay blank on other markets. The last column is the bot's latest decision for that side and why."></span></h2>
+    <div style="overflow-x:auto"><table id="watch"><thead><tr><th>Market</th><th>Side</th><th class="num">Bid / Ask</th><th class="num">P(win)</th><th class="num">Form</th><th class="num">Comeback</th><th>Decision</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Recent closed trades</h2>
+    <div style="overflow-x:auto"><table id="closed"><thead><tr><th>Market / side</th><th class="num">Bought</th><th class="num">Sold</th><th class="num">Qty</th><th class="num">Staked</th><th class="num">P&amp;L</th><th>Why</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+</section>
+
+<section id="tab-tracking" hidden>
+  <div class="card">
+    <h2>Performance <span class="q" tabindex="0" data-help="Every closed trade counts here. Realised P&L is money actually banked; unrealised is what open positions are worth right now versus what you paid."></span></h2>
+    <div class="stats" id="stats"></div>
+  </div>
+  <div class="card">
+    <h2>Equity</h2>
+    <div class="chart" id="equityChart"></div>
+  </div>
+  <div class="card">
+    <h2>All closed trades</h2>
+    <div class="tablewrap tall"><table id="history"><thead><tr>
+      <th>Closed</th><th>Match / player</th><th class="num">Bought</th><th class="num">Sold</th><th class="num">Qty</th><th class="num">Staked</th><th class="num">Fees</th><th class="num">P&amp;L</th><th>Why</th>
+    </tr></thead><tbody></tbody></table></div>
+  </div>
+  <div class="card">
+    <h2>Recent scans</h2>
+    <div class="tablewrap"><table id="runs"><thead><tr><th>When</th><th class="num">Contests</th><th class="num">Signals</th><th class="num">Opened</th><th class="num">Closed</th><th class="num">ms</th><th>Error</th></tr></thead><tbody></tbody></table></div>
+  </div>
+</section>
+
+  <p class="foot" id="foot"></p>
+</main>
+
+<div class="toast" id="toast"></div>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="settings">
+  <div class="top"><h2>Settings</h2><div class="sp" style="flex:1"></div><button id="close-settings">Close</button></div>
+  <p class="msg">Changes apply on the bot's next scan, no restart needed. Hover any <span class="q" tabindex="0" data-help="Like this one. Every setting has a plain-English explanation."></span> for an explanation.</p>
+  <h3>Profiles <span class="q" tabindex="0" data-help="One click sets every entry and exit rule below. Sizing, the pause switch and your keys are never touched, so switching profile cannot change how much money is at risk."></span></h3>
+  <div class="profiles" id="profiles"></div>
+  <form id="settings-form"></form>
+  <div class="actions"><button type="button" id="save-settings" class="primary">Save settings</button><button type="button" id="reset-settings">Reset to .env defaults</button></div>
+  <div class="msg" id="settings-msg"></div>
+
+  <h3>API keys <span class="q" tabindex="0" data-help="Saved to the .env file next to the bot, never sent anywhere except Kalshi and Anthropic. The running bot picks up new keys on its next scan."></span></h3>
+  <div class="row"><label>Kalshi API key ID <span class="q" tabindex="0" data-help="From kalshi.com → Account → API keys (or demo.kalshi.co for the demo exchange). This is the key ID, not the private key."></span></label><input type="text" id="cred-key" placeholder="e.g. 3f2a…" autocomplete="off"></div>
+  <div class="row" style="display:block"><label>Kalshi private key (PEM) <span class="q" tabindex="0" data-help="The .pem file Kalshi gave you when you created the key. Open it in Notepad and paste the whole thing, including the BEGIN/END lines."></span></label><textarea id="cred-pem" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea></div>
+  <div class="row"><label>Anthropic API key <span class="q" tabindex="0" data-help="Needed for player research (form, matchup, injuries) and screenshot reading. From console.anthropic.com."></span></label><input type="password" id="cred-ant" placeholder="sk-ant-…" autocomplete="off"></div>
+  <div class="row"><label>Exchange <span class="q" tabindex="0" data-help="prod = the real Kalshi exchange. Safe with paper execution: the bot only reads prices and never sends an order. demo = Kalshi's practice exchange, which has very few markets and usually no tennis."></span></label><select id="cred-env"><option value="prod">prod (real prices; orders only in live mode)</option><option value="demo">demo (practice exchange, few markets)</option></select></div>
+  <div class="row"><label>Execution <span class="q" tabindex="0" data-help="paper = the bot simulates fills against real quotes and never sends an order. live = real orders through your Kalshi key. Changing this restarts the broker on the next scan."></span></label><select id="cred-mode"><option value="paper">paper (simulated)</option><option value="live">live (real orders)</option></select></div>
+  <div class="actions"><button type="button" id="save-creds" class="primary">Save keys</button><button type="button" id="test-creds">Test connection</button></div>
+  <div class="msg" id="cred-msg"></div>
+  <div class="kv" id="cred-test"></div>
+
+  <h3>Analyze a screenshot <span class="q" tabindex="0" data-help="Drop in a screenshot of a Kalshi tennis market. Claude reads the prices, researches both players, and tells you who is worth buying on a dip and at what sell target. Needs an Anthropic key."></span></h3>
+  <div class="row"><input type="file" id="shot" accept="image/*"><button type="button" id="analyze-shot">Analyze</button></div>
+  <pre class="msg" id="shot-out" style="white-space:pre-wrap"></pre>
+  <p class="foot">Need everything? The <a href="/full">full tracking dashboard</a> has the equity curve, every signal and every trade.</p>
+</aside>
+
+<aside class="drawer" id="guide">
+  <div class="top"><h2>Guide</h2><div class="sp" style="flex:1"></div><button id="close-guide">Close</button></div>
+  <dl class="guide">
+    <dt>What the bot does</dt><dd>Every scan it reads the markets you switched on under <b>Markets</b>. When a price <em>dips</em> far enough below its recent high, it buys, and sells when the price bounces back to the target. If a stop is set and the price keeps falling, it sells there instead. Optional research (tennis only, needs an Anthropic key) adds a fair-value estimate; without it the bot trades the price action alone.</dd>
+    <dt>Status pill</dt><dd>Running = the bot may open positions. Paused = it only manages exits. PAPER/LIVE shows whether orders are simulated or real.</dd>
+    <dt>Equity</dt><dd>Cash plus the current value of open positions. The small number beside it is today's realised profit or loss.</dd>
+    <dt>Pause / Resume</dt><dd>Pause stops new buys immediately. Sell targets and stops on open positions keep working.</dd>
+    <dt>Open positions</dt><dd><b>Bought</b> is the price paid per contract (cents; a contract pays 100¢ if that side wins). <b>Sells at</b> is the take-profit target. <b>Stop</b> is where the bot sells to cap a loss. <b>Now</b> is the current bid, and P&amp;L is what closing now would make.</dd>
+    <dt>Markets being watched</dt><dd>LIVE means contracts actually traded recently, and the number beside it is how many. That is the bot's test for a market being in play, because scheduled start times slip constantly. P(win), Form and Comeback come from the optional tennis research and stay blank elsewhere. Decision is the bot's latest call for that side: BUY, or PASS with the reason (not live yet, no dip yet, edge too thin…).</dd>
+    <dt>Settings ⚙</dt><dd>Toggles and numbers that control the bot, grouped as Bot (on/off switches), Entry (when to buy), Exit (when to sell) and Risk (how much). Each has a ? with an explanation. Saving applies on the next scan.</dd>
+    <dt>API keys</dt><dd>Your Kalshi key ID and private key let the bot read your balance and, in live mode, place orders. The Anthropic key powers the optional tennis research and screenshot reading. Keys are stored only in the local .env file.</dd>
+    <dt>Analyze a screenshot</dt><dd>Upload a Kalshi screenshot instead of using the API. You get the same research and a verdict per player.</dd>
+    <dt>Full dashboard</dt><dd><a href="/full">/full</a> shows the equity curve, every signal in the 4-line format, orders, and scan history.</dd>
+  </dl>
+</aside>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const usd = (n) => (n == null || !isFinite(n) ? '–' : (n < 0 ? '-' : '') + '$' + Math.abs(n).toFixed(2));
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sign = (n) => (n > 0 ? 'up' : n < 0 ? 'down' : '');
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const ts = (s) => (s ? s.replace('T', ' ').replace(/\+00:00|Z/, '').slice(5, 16) : '–');
+const api = async (path, opts) => { const r = await fetch(path, opts); if (!r.ok) { let m = r.status + ''; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); } return r.json(); };
+
+let toastTimer, lastScan = null, lastScanError = null, scanSuffix = '';
+const lastQuotes = new Map();
+function toast(msg, kind = '') { const t = $('#toast'); t.textContent = msg; t.className = 'toast show ' + kind; clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = 'toast'), 3500); }
+
+function playerFrom(title) { const i = title.lastIndexOf(' · '); return i > 0 ? [title.slice(0, i), title.slice(i + 3)] : [title, '']; }
+
+async function refresh() {
+  try {
+    const o = await api('/api/tennis/overview');
+    const running = o.bot_enabled && !o.halted;
+    $('#status').className = 'pill ' + (running ? 'on' : 'off');
+    $('#status').innerHTML = `<i></i>${running ? 'Running' : 'Paused'}`;
+    $('#mode').textContent = `${o.mode.toUpperCase()} · ${o.env}`;
+    $('#mode').className = 'pill' + (o.mode === 'live' && o.env === 'prod' ? ' live' : '');
+    $('#equity').textContent = usd(o.equity);
+    $('#pnl').innerHTML = `today <span class="${sign(o.daily_pnl)}">${usd(o.daily_pnl)}</span> · all time <span class="${sign(o.realized_pnl)}">${usd(o.realized_pnl)}</span>`;
+    $('#btn-pause').hidden = !running; $('#btn-resume').hidden = running;
+    const bar = $('#livebar');
+    if (o.config_error) { bar.hidden = false; bar.textContent = 'CONFIG PROBLEM — ' + o.config_error + ' (running in paper mode until fixed)'; }
+    else if (o.mode === 'live') { bar.hidden = false; bar.textContent = 'REAL MONEY — Execution is live. Orders here spend your Kalshi balance. Switch to paper in Settings to practise.'; }
+    else bar.hidden = true;
+    $('#keys').textContent = o.kalshi_key_set ? 'Kalshi key saved' : 'No Kalshi key';
+    $('#keys').className = 'pill ' + (o.kalshi_key_set ? 'on' : 'off');
+    $('#keys').innerHTML = `<i></i>${$('#keys').textContent}`;
+
+    const P = $('#positions');
+    P.innerHTML = o.positions.length ? o.positions.map((t) => { const [m, p] = playerFrom(t.title); return `
+      <div class="pos"><div><div class="m">${esc(p || t.ticker)}</div><div class="s">${esc(m)} · ${t.count} contracts · ${t.side.toUpperCase()}</div></div>
+      <div><div class="k">Bought</div><div class="v">${t.entry_price}¢</div></div>
+      <div><div class="k">Sells at</div><div class="v up">${t.take_profit}¢</div></div>
+      <div><div class="k">Stop</div><div class="v ${t.stop_loss ? 'down' : ''}">${t.stop_loss ? t.stop_loss + '¢' : 'riding'}</div></div>
+      <div><div class="k">Now</div><div class="v">${t.now_bid != null ? t.now_bid + '¢' : '–'}</div></div>
+      <div><div class="k">Staked</div><div class="v">${usd(t.cost)}</div></div>
+      <div><div class="k">If it wins</div><div class="v up">${t.target_gain != null ? '+' + usd(t.target_gain) : '–'}</div><div class="s">${t.target_payout != null ? usd(t.target_payout) + ' back' : ''}</div></div>
+      <div><div class="k">${t.stop_loss ? 'If stopped' : 'If it loses'}</div><div class="v down">${t.at_risk != null ? '−' + usd(t.at_risk) : '–'}</div><div class="s">${t.stop_loss ? (t.stop_payout != null ? usd(t.stop_payout) + ' back' : '') : 'nothing back'}</div></div>
+      <div><div class="k">P&amp;L</div><div class="v ${sign(t.unrealized)}">${usd(t.unrealized)}</div></div>
+      <div><button class="cashout" data-trade="${t.id}"${t.close_requested ? ' disabled' : ''}>${t.close_requested ? 'Selling…' : 'Cash out'}</button></div></div>`; }).join('')
+      : '<div class="empty">Nothing open. The bot buys only when a price dips far enough on a market you switched on.</div>';
+
+    const W = $('#watch tbody');
+    const rows = [];
+    for (const m of o.watch) for (const [i, l] of m.legs.entries()) {
+      const dec = l.decision.startsWith('BUY') ? `<span class="badge buy">${esc(l.decision)}</span>` : `<span class="badge">${esc(l.decision)}</span>`;
+      const st = m.status || (m.live ? 'live' : 'pre-match');
+      const traded = m.traded ? (m.traded >= 1000 ? (m.traded / 1000).toFixed(1) + 'k' : m.traded) + ' traded' : '';
+      const stBadge = (st === 'live' ? '<span class="badge live">LIVE</span>' : st === 'closed' ? '<span class="badge closed">closed</span>' : '<span class="badge pre">pre-match</span>')
+        + (traded ? ` <span class="badge" title="Contracts traded recently. This is what makes a match count as live.">${traded}</span>` : '');
+      const key = l.ticker, quote = `${l.bid}/${l.ask}`, moved = lastQuotes.has(key) && lastQuotes.get(key) !== quote;
+      lastQuotes.set(key, quote);
+      rows.push(`<tr>${i === 0 ? `<td rowspan="${m.legs.length}"><b>${esc(m.title)}</b><br><span class="why">${esc(m.tournament || '')}</span> ${stBadge}${m.researched ? '' : ' <span class="badge">no research</span>'}</td>` : ''}
+        <td>${esc(l.player)}</td><td class="num${moved ? ' flash' : ''}">${l.bid}¢ / ${l.ask}¢</td><td class="num">${l.p_pre != null ? (l.p_pre * 100).toFixed(0) + '%' : '–'}</td>
+        <td class="num">${l.form != null ? l.form.toFixed(0) : '–'}</td><td class="num">${l.comeback != null ? l.comeback.toFixed(0) : '–'}</td>
+        <td>${dec}<div class="why">${esc(l.reason)}</div></td></tr>`);
+    }
+    if (rows.length) W.innerHTML = rows.join('');
+    else {
+      const d = o.discovery || {}; const parts = Object.entries(d).filter(([k]) => k !== 'exchange').map(([k, v]) => `${k}: ${v}`);
+      const demoTip = o.env === 'demo' ? '<br><b>You are on the demo exchange, which has very few markets and usually no tennis.</b> Open Settings → API keys, set Exchange to prod and save. With paper execution the bot only reads prices and never sends an order.' : '';
+      W.innerHTML = `<tr><td colspan="7" class="empty">No tennis matches found${o.last_cycle ? '' : ' yet (no scan has run)'}.` + (parts.length ? `<div class="why" style="margin-top:6px">Last scan fetched: ${esc(parts.join(' · '))}</div>` : '') + demoTip + '</td></tr>';
+    }
+
+    $('#closed tbody').innerHTML = o.recent_closed.length ? o.recent_closed.map((t) => { const [m, p] = playerFrom(t.title); return `<tr><td><b>${esc(p || t.ticker)}</b><div class="why">${esc(m)}</div></td><td class="num">${t.entry_price}¢</td><td class="num">${t.exit_price}¢</td><td class="num">${t.count}</td><td class="num">${usd(t.entry_price * t.count / 100)}</td><td class="num ${sign(t.pnl)}">${usd(t.pnl)}</td><td class="why">${esc(t.exit_reason)} · ${ts(t.closed_at)}</td></tr>`; }).join('')
+      : '<tr><td colspan="7" class="empty">No closed trades yet.</td></tr>';
+
+    const B = o.blockers || [];
+    $('#blockers-card').hidden = B.length === 0;
+    $('#blockers tbody').innerHTML = B.map((b) =>
+      `<tr><td class="num"><b>${b.count}</b></td><td>${esc(b.reason)}<div class="why">e.g. ${esc(b.example)}</div></td></tr>`).join('');
+
+    const c = o.counts || {};
+    $('#counts').textContent = c.matches
+      ? `${c.matches} matches · ${c.live || 0} live · ${c.researched || 0} researched` + (o.research_pending ? ` · ${o.research_pending} researching` : '')
+      : '';
+    lastScan = o.last_cycle ? o.last_cycle.ts : null;
+    lastScanError = o.last_cycle ? o.last_cycle.error : null;
+    scanSuffix = ` · research: ${o.research_status} · win rate ${(o.win_rate * 100).toFixed(0)}% over ${o.trades_closed} trades`;
+    tickFoot();
+  } catch (e) { $('#foot').textContent = 'Dashboard could not reach the bot: ' + e.message; }
+}
+
+async function loadSettings() {
+  const schema = await api('/api/settings/schema');
+  const groups = {};
+  for (const s of schema) (groups[s.group] ||= []).push(s);
+  $('#settings-form').innerHTML = Object.entries(groups).map(([g, items]) => `<h3>${g}</h3>` + items.map((s) => `
+    <div class="row"><label for="set-${s.key}">${esc(s.label)} <span class="q" tabindex="0" data-help="${esc(s.help)}"></span></label>
+    ${s.type === 'bool' ? `<input type="checkbox" id="set-${s.key}" data-key="${s.key}" data-type="bool" ${s.value ? 'checked' : ''}>`
+      : `<input type="number" id="set-${s.key}" data-key="${s.key}" data-type="${s.type}" value="${s.value}" ${s.min != null ? `min="${s.min}"` : ''} ${s.max != null ? `max="${s.max}"` : ''} step="${s.type === 'int' ? 1 : 'any'}">`}</div>`).join('')).join('');
+  const c = await api('/api/credentials');
+  $('#cred-key').placeholder = c.kalshi_api_key_id ? `saved (${c.kalshi_api_key_id})` : 'not set';
+  $('#cred-pem').placeholder = c.kalshi_private_key ? 'saved. Paste a new key to replace it.' : '-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----';
+  $('#cred-ant').placeholder = c.anthropic_api_key ? `saved (${c.anthropic_api_key})` : 'not set';
+  $('#cred-env').value = c.kalshi_env; $('#cred-mode').value = c.trading_mode;
+}
+
+$('#save-settings').onclick = async () => {
+  const body = {};
+  for (const el of document.querySelectorAll('#settings-form [data-key]')) body[el.dataset.key] = el.dataset.type === 'bool' ? el.checked : Number(el.value);
+  try { await api('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); $('#settings-msg').className = 'msg'; $('#settings-msg').textContent = 'Saved. Applies on the next scan.'; toast('Settings saved. They apply on the bot\'s next scan.', 'ok'); refresh(); }
+  catch (e) { $('#settings-msg').className = 'msg err'; $('#settings-msg').textContent = 'Not saved: ' + e.message; toast('Settings not saved: ' + e.message, 'err'); }
+};
+$('#reset-settings').onclick = async () => { await api('/api/settings', { method: 'DELETE' }); await loadSettings(); $('#settings-msg').textContent = 'Reset to the values in .env.'; toast('Settings reset to .env defaults.', 'ok'); refresh(); };
+$('#save-creds').onclick = async () => {
+  const body = { kalshi_env: $('#cred-env').value, trading_mode: $('#cred-mode').value };
+  if ($('#cred-key').value.trim()) body.kalshi_api_key_id = $('#cred-key').value.trim();
+  if ($('#cred-pem').value.trim()) body.kalshi_private_key_pem = $('#cred-pem').value;
+  if ($('#cred-ant').value.trim()) body.anthropic_api_key = $('#cred-ant').value.trim();
+  if (body.trading_mode === 'live' && body.kalshi_env === 'prod' && !confirm('Live execution on the real exchange: the bot will place real orders with real money. Continue?')) return;
+  try {
+    const r = await api('/api/credentials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    $('#cred-msg').className = 'msg'; $('#cred-msg').textContent = `Saved to .env (${r.updated.join(', ')}). The bot reloads on its next scan. Testing the connection…`;
+    toast('Keys saved. Testing the connection…', 'ok');
+    $('#cred-key').value = $('#cred-pem').value = $('#cred-ant').value = ''; loadSettings(); refresh();
+    await testConnection();
+  } catch (e) { $('#cred-msg').className = 'msg err'; $('#cred-msg').textContent = 'Not saved: ' + e.message; toast('Keys not saved: ' + e.message, 'err'); }
+};
+async function testConnection() {
+  const box = $('#cred-test'); box.innerHTML = '<b>Testing…</b><span></span>';
+  try {
+    const r = await api('/api/credentials/test', { method: 'POST' });
+    const row = (k, v, ok) => `<b>${k}</b><span class="${ok ? 'up' : 'down'}">${esc(v)}</span>`;
+    box.innerHTML = [
+      row('Exchange', `${r.env} (${r.base_url})`, true),
+      r.market_data ? row('Market data', r.market_data.ok ? `reachable (e.g. ${r.market_data.sample || 'no open markets'})` : 'failed: ' + r.market_data.error, r.market_data.ok) : '',
+      row('Kalshi key', r.kalshi.ok ? `OK · balance $${r.kalshi.balance.toFixed(2)} · portfolio $${r.kalshi.portfolio_value.toFixed(2)}` : r.kalshi.error, r.kalshi.ok),
+      row('Research (Claude)', r.anthropic.ok ? 'ready' : r.anthropic.error, r.anthropic.ok),
+    ].join('');
+    toast(r.kalshi.ok ? `Kalshi connected: balance $${r.kalshi.balance.toFixed(2)}` : 'Kalshi key check failed: ' + r.kalshi.error, r.kalshi.ok ? 'ok' : 'err');
+  } catch (e) { box.innerHTML = `<b>Test failed</b><span class="down">${esc(e.message)}</span>`; toast('Connection test failed: ' + e.message, 'err'); }
+}
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.cashout');
+  if (!btn) return;
+  const row = btn.closest('.pos');
+  const who = row ? row.querySelector('.m').textContent : 'this position';
+  if (!confirm(`Sell ${who} at the current bid?\n\nThis ignores the target and the stop, and fills on the bot's next scan. The bot must be running.`)) return;
+  btn.disabled = true; btn.textContent = 'Selling…';
+  try {
+    const r = await api(`/api/positions/${btn.dataset.trade}/close`, { method: 'POST' });
+    toast(r.detail, 'ok');
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Cash out';
+    toast('Could not cash out: ' + err.message, 'err');
+  }
+  refresh();
+});
+$('#test-creds').onclick = testConnection;
+$('#analyze-shot').onclick = async () => {
+  const f = $('#shot').files[0]; if (!f) { $('#shot-out').textContent = 'Choose an image first.'; return; }
+  const fd = new FormData(); fd.append('file', f);
+  $('#shot-out').textContent = 'Reading the screenshot and researching both players… this takes a minute.';
+  try {
+    const r = await api('/api/tennis/screenshot', { method: 'POST', body: fd });
+    const lines = [];
+    if (r.error) lines.push('Note: ' + r.error);
+    if (r.reading) lines.push(`${r.reading.title}  yes ${r.reading.yes_bid}/${r.reading.yes_ask}¢  no ${r.reading.no_bid}/${r.reading.no_ask}¢`);
+    if (r.assessment) lines.push(`Research: P(${r.assessment.player_a}) = ${(r.assessment.p_a_wins * 100).toFixed(0)}%, confidence ${r.assessment.confidence.toFixed(2)}\n${r.assessment.trade_view}`);
+    for (const v of r.verdicts || []) lines.push(`${v.player}: ${v.verdict} at ${v.ask}¢ · form ${v.form.toFixed(0)} · comeback ${v.comeback.toFixed(0)} · P(win) ${(v.p_pre * 100).toFixed(0)}%` + (v.sell_target ? ` → sell ${v.sell_target}¢, stop ${v.stop}¢` : '') + (v.blockers.length ? `\n   blocked: ${v.blockers.join('; ')}` : ''));
+    $('#shot-out').textContent = lines.join('\n');
+  } catch (e) { $('#shot-out').textContent = 'Failed: ' + e.message; }
+};
+$('#btn-pause').onclick = async () => { await api('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bot_enabled: false }) }); toast('Paused. No new positions will be opened; exits still run.', 'ok'); refresh(); };
+$('#btn-resume').onclick = async () => { await api('/api/control/resume', { method: 'POST' }); await api('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bot_enabled: true }) }); toast('Resumed. The bot may open positions again.', 'ok'); refresh(); };
+const open = (id) => { document.querySelectorAll('.drawer').forEach((d) => d.classList.remove('open')); $(id).classList.add('open'); $('#scrim').classList.add('open'); };
+const closeAll = () => { document.querySelectorAll('.drawer').forEach((d) => d.classList.remove('open')); $('#scrim').classList.remove('open'); };
+
+// ---- tabs -----------------------------------------------------------------
+let activeTab = 'trading';
+document.querySelectorAll('.tab').forEach((b) => {
+  b.onclick = () => {
+    activeTab = b.dataset.tab;
+    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
+    $('#tab-trading').hidden = activeTab !== 'trading';
+    $('#tab-tracking').hidden = activeTab !== 'tracking';
+    if (activeTab === 'tracking') loadTracking();
+  };
+});
+
+// ---- markets ---------------------------------------------------------------
+const compact = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'm' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n || 0));
+let marketsBusy = false;
+
+async function loadMarkets() {
+  let data;
+  try { data = await api('/api/series'); } catch (e) { $('#markets').innerHTML = `<div class="empty">Could not load markets: ${esc(e.message)}</div>`; return; }
+  const rows = data.series || [];
+  $('#markets-when').textContent = data.scanned_at ? `scanned ${ts(data.scanned_at)}` : 'never scanned';
+  if (!rows.length) {
+    $('#markets').innerHTML = '<div class="empty">No markets known yet. Press <b>Scan the exchange</b> to see what is trading.</div>';
+    return;
+  }
+  const groups = {};
+  for (const r of rows) (groups[r.category] = groups[r.category] || []).push(r);
+  // Busiest category first, matching how the API ranked the series inside it.
+  const order = Object.entries(groups).sort((a, b) =>
+    b[1].reduce((s, r) => s + r.volume_24h, 0) - a[1].reduce((s, r) => s + r.volume_24h, 0));
+  $('#markets').innerHTML = order.map(([cat, list]) => `<div class="mkt-cat">${esc(cat)}</div><div class="mkt-row">` +
+    list.map((r) => {
+      // A series with no two-sided quote anywhere is untradeable however big it looks,
+      // so say so on the button rather than letting volume alone imply it is usable.
+      const dead = r.markets > 0 && r.liquid_markets === 0;
+      const detail = r.markets === 0 ? 'switched on, not seen in the last scan'
+        : `${compact(r.volume_24h)} vol · ${r.liquid_markets}/${r.open_markets} liquid`;
+      return `<button class="mkt${r.enabled ? ' on' : ''}${dead ? ' dead' : ''}" data-series="${esc(r.ticker)}"
+        title="${esc((r.examples || []).join('\n') || r.ticker)}">
+        <span class="t">${r.enabled ? '✓ ' : ''}${esc(r.ticker)}</span><span class="d">${esc(detail)}</span></button>`;
+    }).join('') + '</div>').join('');
+}
+
+async function setMarkets(tickers) {
+  const r = await api('/api/series', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled_series: tickers }) });
+  toast(r.detail, 'ok');
+  await loadMarkets();
+}
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.mkt');
+  if (!btn || marketsBusy) return;
+  marketsBusy = true;
+  try {
+    const on = [...document.querySelectorAll('.mkt.on')].map((b) => b.dataset.series);
+    const ticker = btn.dataset.series;
+    await setMarkets(btn.classList.contains('on') ? on.filter((x) => x !== ticker) : [...on, ticker]);
+  } catch (err) { toast('Could not change markets: ' + err.message, 'err'); }
+  marketsBusy = false;
+});
+
+$('#discover').onclick = async () => {
+  const b = $('#discover'); b.disabled = true; b.textContent = 'Scanning…';
+  try {
+    const r = await api('/api/series/discover', { method: 'POST' });
+    toast(r.detail, 'ok');
+    await loadMarkets();
+  } catch (e) { toast('Scan failed: ' + e.message, 'err'); }
+  b.disabled = false; b.textContent = 'Scan the exchange';
+};
+
+// ---- profiles --------------------------------------------------------------
+async function loadProfiles() {
+  const list = await api('/api/profiles');
+  $('#profiles').innerHTML = list.map((p) => `
+    <button type="button" class="profile ${p.active ? 'on' : ''}" data-profile="${esc(p.name)}">
+      <b>${esc(p.label)}${p.active ? ' ✓' : ''}</b>
+      <span>${esc(p.blurb)}</span>
+    </button>`).join('');
+}
+$('#profiles').onclick = async (ev) => {
+  const btn = ev.target.closest('button[data-profile]');
+  if (!btn) return;
+  try {
+    const r = await api('/api/profiles/' + btn.dataset.profile, { method: 'POST' });
+    toast(`${btn.querySelector('b').textContent.replace(' ✓', '')} profile applied. It takes effect on the next scan.`, 'ok');
+    await loadSettings(); await loadProfiles(); refresh();
+    void r;
+  } catch (e) { toast('Could not apply profile: ' + e.message, 'err'); }
+};
+
+// ---- tracking tab ----------------------------------------------------------
+const NS2 = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs, parent) {
+  const n = document.createElementNS(NS2, tag);
+  for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, v);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function drawEquity(rows) {
+  const host = $('#equityChart');
+  host.innerHTML = '';
+  if (rows.length < 2) { host.innerHTML = '<div class="empty">Not enough history yet. The bot records equity every scan.</div>'; return; }
+  const W = host.clientWidth || 700, H = host.clientHeight || 220, pad = { l: 58, r: 10, t: 10, b: 22 };
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none' }, host);
+  const vals = rows.map((r) => r.equity);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi === lo) { hi = lo + 1; lo -= 1; }
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const y = (v) => pad.t + ih * (1 - (v - lo) / (hi - lo));
+  const x = (i) => pad.l + (iw * i) / (rows.length - 1);
+  for (let g = 0; g <= 3; g++) {
+    const v = lo + ((hi - lo) * g) / 3;
+    svgEl('line', { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), stroke: css('--line'), 'stroke-width': 1 }, svg);
+    const t = svgEl('text', { x: pad.l - 8, y: y(v) + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--muted') }, svg);
+    t.textContent = '$' + v.toFixed(2);
+  }
+  const d = rows.map((r, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(r.equity).toFixed(1)).join(' ');
+  const base = y(lo);
+  svgEl('path', { d: `${d} L${x(rows.length - 1)} ${base} L${x(0)} ${base} Z`, fill: css('--accent'), 'fill-opacity': 0.1 }, svg);
+  svgEl('path', { d, fill: 'none', stroke: css('--accent'), 'stroke-width': 2, 'stroke-linejoin': 'round' }, svg);
+  const last = rows[rows.length - 1];
+  svgEl('circle', { cx: x(rows.length - 1), cy: y(last.equity), r: 5, fill: css('--surface') }, svg);
+  svgEl('circle', { cx: x(rows.length - 1), cy: y(last.equity), r: 3.5, fill: css('--accent') }, svg);
+  [0, rows.length - 1].forEach((i) => {
+    const t = svgEl('text', { x: x(i), y: H - 5, 'text-anchor': i ? 'end' : 'start', 'font-size': 11, fill: css('--muted') }, svg);
+    t.textContent = ts(rows[i].ts);
+  });
+}
+async function loadTracking() {
+  try {
+    const [summary, equity, trades, runs, live] = await Promise.all([
+      api('/api/summary'), api('/api/equity?limit=3000'), api('/api/trades?status=closed&limit=500'), api('/api/runs?limit=20'),
+      api('/api/tennis/overview').catch(() => null),
+    ]);
+    const m = summary.metrics;
+    // A metric is null when it is not defined yet - profit factor with no losing trades
+    // is the common one, and `isFinite(null)` is true in JavaScript, so a bare
+    // `m.x.toFixed()` throws and takes the whole tab down with it.
+    const num = (v, digits = 2, blank = '–') => (v == null || !isFinite(v) ? blank : Number(v).toFixed(digits));
+    const pf = m.profit_factor == null ? '∞' : (isFinite(m.profit_factor) ? m.profit_factor.toFixed(2) : '∞');
+    const stat = (k, v, cls) => `<div class="stat"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div></div>`;
+    $('#stats').innerHTML = [
+      stat('Equity', usd(m.equity)),
+      stat('Realised P&L', usd(m.realized_pnl), sign(m.realized_pnl)),
+      stat('Unrealised', usd(m.unrealized_pnl), sign(m.unrealized_pnl)),
+      stat('Today', usd(m.daily_pnl), sign(m.daily_pnl)),
+      stat('Win rate', m.win_rate == null ? '–' : num(m.win_rate * 100, 0) + '%'),
+      stat('W / L', `${m.wins} / ${m.losses}`),
+      stat('Profit factor', pf),
+      stat('Per trade', usd(m.expectancy), sign(m.expectancy)),
+      stat('Max drawdown', usd(-m.max_drawdown), m.max_drawdown > 0 ? 'down' : ''),
+      stat('Fees paid', usd(m.total_fees)),
+      // What is on the table right now, in dollars rather than cents-times-contracts.
+      ...(live ? [
+        stat('Staked now', usd(live.open_cost)),
+        stat('At risk', live.open_at_risk ? '−' + usd(live.open_at_risk) : usd(0), live.open_at_risk ? 'down' : ''),
+        stat('If all win', live.open_target_gain ? '+' + usd(live.open_target_gain) : usd(0), live.open_target_gain ? 'up' : ''),
+      ] : []),
+    ].join('');
+    drawEquity(equity);
+    const tb = $('#history tbody');
+    tb.innerHTML = trades.length ? trades.map((t) => `<tr>
+      <td>${ts(t.closed_at)}</td><td>${esc(t.title || t.ticker)}</td>
+      <td class="num">${t.entry_price}¢</td><td class="num">${t.exit_price}¢</td><td class="num">${t.count}</td>
+      <td class="num">${usd(t.entry_price * t.count / 100)}</td>
+      <td class="num">${usd(t.fees)}</td><td class="num ${sign(t.pnl)}">${usd(t.pnl)}</td>
+      <td class="why">${esc(t.exit_reason || '')}</td></tr>`).join('')
+      : '<tr><td colspan="8" class="empty">No closed trades yet.</td></tr>';
+    const rb = $('#runs tbody');
+    rb.innerHTML = runs.length ? runs.map((r) => `<tr><td>${ts(r.ts)}</td><td class="num">${r.markets_scanned}</td>
+      <td class="num">${r.signals}</td><td class="num">${r.trades_opened}</td><td class="num">${r.trades_closed}</td>
+      <td class="num">${r.duration_ms}</td><td class="why ${r.error ? 'down' : ''}">${esc(r.error || '')}</td></tr>`).join('')
+      : '<tr><td colspan="7" class="empty">No scans recorded yet.</td></tr>';
+  } catch (e) { $('#stats').innerHTML = `<div class="empty">Could not load tracking: ${esc(e.message)}</div>`; }
+}
+window.addEventListener('resize', () => { if (activeTab === 'tracking') loadTracking(); });
+
+$('#btn-settings').onclick = () => { loadSettings(); open('#settings'); };
+$('#btn-guide').onclick = () => open('#guide');
+$('#close-settings').onclick = $('#close-guide').onclick = $('#scrim').onclick = closeAll;
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAll(); });
+function tickFoot() {
+  if (!lastScan) { $('#foot').textContent = 'No scan yet. Start the bot with start.bat / start.ps1.' + (scanSuffix || ''); return; }
+  const secs = Math.max(0, Math.round((Date.now() - new Date(lastScan.endsWith('Z') || lastScan.includes('+') ? lastScan : lastScan + 'Z').getTime()) / 1000));
+  const ago = secs < 90 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`;
+  $('#foot').textContent = `Scanned ${ago}${lastScanError ? ' · ERROR ' + lastScanError : ''}${scanSuffix || ''}`;
+}
+loadProfiles();
+refresh(); loadMarkets(); setInterval(refresh, 3000); setInterval(tickFoot, 1000);
+</script>
+</body>
+</html>
