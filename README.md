@@ -1,188 +1,203 @@
-# ⚡ KalshiTrader
+# KalshiTrader
 
-An automated trading bot for [Kalshi](https://kalshi.com) event contracts with a
-login-protected local web dashboard: real-time trades with per-trade net
-profit, cumulative profit and per-market PnL charts, equity curve, in-GUI API
-credential management, per-strategy start/pause/stop controls, live settings
-editor, and a terminal-style activity stream.
+An automated trading bot for [Kalshi](https://kalshi.com) event contracts, with a
+local dashboard. It buys price dips on the markets you switch on and sells the
+rebound, sizing every position against the fees Kalshi charges on both ends.
 
-> **Not financial advice. Trading involves risk of loss.** Run in demo mode
-> first (see [Going live](#going-live)) and keep allocation limits low.
+> **Not financial advice, and this can lose money.** It ships paused, in paper mode,
+> and every number it shows is after fees. Run it on paper until its win rate beats
+> the break-even it prints for you. See [Reading the numbers](#reading-the-numbers).
 
-## Architecture
+## What it does
 
-```
-┌────────────────────────────────────────────────────────────┐
-│  dashboard/  — vanilla JS + Chart.js, served by FastAPI    │
-│      ▲  REST (state, settings, control)                    │
-│      ▲  WebSocket /ws (live activity + overview stream)    │
-├────────────────────────────────────────────────────────────┤
-│  src/main.py        FastAPI app                            │
-│  src/bot_engine.py  strategy loops, order gating, equity   │
-│  src/strategies/    arbitrage · fair value · signal watch  │
-│  src/risk_manager.py  pre-trade checks + circuit breakers  │
-│  src/kalshi_client.py RSA-signed async API client          │
-│  src/database.py    SQLite via SQLAlchemy (audit trail)    │
-└────────────────────────────────────────────────────────────┘
-```
+Every scan it reads the markets you enabled, groups them into contests, and for each
+side asks a series of questions in order — is it live, has it dipped far enough, does
+the edge survive both fees, is the book deep enough, is there room under your
+exposure limits. It buys when all of them pass, and manages the exit itself.
 
-The core loop for each running strategy:
+When it buys nothing, it tells you which question failed and how often. That panel is
+the point: "0 entries" on its own sends you hunting for a network fault that was
+really a setting.
 
-1. **Scan** — pull live orderbooks for the configured tickers/series.
-2. **Detect edge** — arbitrage spread or fair-value discrepancy.
-3. **Risk check** — capital ceiling, per-order size, circuit breakers.
-4. **Execute** — limit orders only, each with an `expiration_ts` (TTL) so
-   nothing rests stale.
+## Markets
 
-## Strategies
+There is **no hard-coded list of tradeable series**, on purpose. A ticker guessed from
+memory looks exactly like a market with nothing trading in it, and the difference is
+invisible until a whole session passes without a trade.
 
-| Strategy | What it does | Places orders? |
+Instead the bot asks the exchange. Press **Scan the exchange** on the dashboard (or run
+`kalshitrader discover`) and it pages the open markets, groups them by series, and ranks
+them by 24-hour volume and by how many have a two-sided quote — a series with none of
+those cannot be traded however large it looks. Switch on the ones you want; each is a
+button.
+
+It handles the shapes Kalshi actually uses:
+
+| Shape | Example | Becomes |
 | --- | --- | --- |
-| **Binary Arbitrage Scanner** | Buys YES + NO together when `yes_ask + no_ask ≤ 100¢ − min_profit`, locking in the spread at settlement | Yes |
-| **Fair Value / Edge Trader** | You supply per-ticker fair probabilities (dashboard → Fair Values); it bids when the market is cheaper than fair value minus an edge buffer | Yes |
-| **Live Swing Trader** | Buys sharp dips in live markets (in-game momentum overreactions) and cashes out on a take-profit, stop-loss, or max-hold timer — never held to settlement. **Directional risk**: the stop-loss bounds a dip that never recovers | Yes |
-| **Signal-Only Watcher** | Same detection as the arb scanner, but only emits notifications — for validating thresholds before committing capital | No |
+| head-to-head, one market per side | most sports | two legs, one per competitor |
+| head-to-head, single market | `Arsenal vs Chelsea` | a Yes leg and a No leg |
+| single outcome | `Will the Fed cut?` | a Yes leg and a No leg |
+| a strip of thresholds | temperature bands, price ladders | one contest per level |
 
-## Risk management
+Optional research (currently tennis only, needs an Anthropic key) adds a fair-value
+estimate on top. Without it the bot trades the price action alone, which is the default.
 
-- `max_money_working` — hard ceiling on capital in open orders + positions;
-  any order that would exceed it is blocked.
-- `max_contracts_per_order` — per-order size cap.
-- `daily_stop_loss_pct` — if equity drops more than this % from the day's
-  first snapshot, the engine **cancels all resting orders, pauses every
-  strategy, and refuses new orders** until you reset the breaker in the UI.
-- Limit orders only, every one with an automatic expiration (`order_ttl_seconds`).
-- Every order, fill, settings change, and breaker event is written to the
-  SQLite audit trail.
-
-## Dashboard login & credentials
-
-- **Login**: the first time you open the dashboard it asks you to create a
-  password (stored as a PBKDF2-SHA256 hash in SQLite); afterwards you log in
-  with it. Sessions are HMAC-signed httponly cookies, and every API route and
-  the WebSocket require one.
-- **API credentials in the GUI**: paste (or file-pick) your Kalshi Key ID and
-  RSA private key in the **API Credentials** panel — separate slots for demo
-  and live. The key is validated, written to `keys/<env>_key.pem` with `0600`
-  permissions, and the connection is tested immediately (it shows your
-  balance on success). GUI-saved credentials take priority over `.env` values,
-  which remain supported as a fallback.
-
-## Trades & PnL tracking
-
-The **Trades** table shows every realized trade in real time with its
-timestamp, cost, proceeds, and **net profit** (fees from the API are
-subtracted). Realization events are sells (average-cost basis) and market
-settlements (100¢ per winning contract). They feed:
-
-- the **Net Profit (realized)** metric and trades-closed count,
-- the **Cumulative Net Profit** stepped chart,
-- the **PnL by Market** bar chart (green = profitable, red = losing),
-- alongside the raw **Fills** feed and the **Equity Curve**.
-
-## Setup
-
-### 1. Install & run
+## Quick start
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-uvicorn src.main:app --reload
+pip install -e ".[dev,ai]"
+cp .env.example .env          # then add your Kalshi key id and private key path
+kalshitrader-app              # dashboard + bot in one process, opens your browser
 ```
 
-Open **http://127.0.0.1:8000** — the dashboard is served by the same process.
-Create your dashboard password when prompted.
+The bot starts **paused**. Add your keys under Settings, scan for markets, switch some
+on, pick a profile, then press Resume.
 
-### 2. Credentials
+Prefer separate windows? `kalshitrader dashboard` and `kalshitrader run`, or the
+`start.ps1` / `start.sh` launchers.
 
-1. Create an API key at kalshi.com → Account → API keys and download the
-   private key `.pem` (Kalshi shows it exactly once).
-2. Enter the Key ID and the key in the dashboard's **API Credentials** panel
-   and hit **Save & Test Connection** — or, if you prefer files, copy
-   `.env.example` to `.env` and set `KALSHI_KEY_ID` /
-   `KALSHI_PRIVATE_KEY_PATH` there.
+## Profiles
 
-**Never commit `.env` or `.pem` files** — the provided `.gitignore` already
-excludes them.
+One click sets the entry and exit rules. None of them touch your keys or the pause
+switch, so switching profile cannot change what is already at risk.
 
-### 3. Configure & start
+| | Dip required | Target | Stop | Break-even win rate |
+| --- | --- | --- | --- | --- |
+| **Risky** | 10¢ | 6¢ | 5¢ | ~50% |
+| **Normal** | 14¢ | 8¢ | 6¢ | ~46% |
+| **Safe** | 20¢ | 12¢ | 6¢ | ~38% |
 
-1. In the **Settings** panel set your target tickers (comma-separated market
-   tickers) and/or target series (e.g. a crypto series ticker — all its open
-   markets are auto-discovered each scan).
-2. Tune `Scan Interval`, `Contracts Per Side`, `Min Profit Threshold`, and
-   `Max Allocation`, then **Save Settings**.
-3. Start the **Signal-Only Watcher** first and watch the activity stream to
-   confirm scans run cleanly and edges are detected sensibly.
-4. Start the arbitrage or fair-value strategy when you're happy.
+Those break-evens are gross of fees. The honest, after-fee figures are worse and the
+dashboard shows them per position — see below.
 
-### Verification checklist (demo)
+## Reading the numbers
 
-- Dashboard shows your demo balance and the equity curve begins plotting.
-- Scans appear in the activity log at your configured interval with no
-  authentication errors.
-- Placed limit orders appear in the Orders table (and in the Kalshi demo UI),
-  and expire on their own after the order TTL.
+Kalshi charges `7% × p × (1−p)` per contract **on entry and again on exit**, roughly
+3.5¢ round trip at mid prices. That comes out of every win and is added to every loss,
+which changes the arithmetic more than it looks:
+
+```
+entry 44c, target 53c, stop 36c
+gross   reward 9c    risk 8c     1.12:1     ← what the price move suggests
+net     reward 5.5c  risk 11.3c  0.49:1     ← what you actually get
+```
+
+So each open position shows **Staked**, **If it wins** and **If stopped** in dollars,
+after both fees, and the Tracking tab totals them. Judge a run on **win rate against
+the break-even those numbers imply**, not on any single trade.
+
+Two switches matter here:
+
+- **Use a stop loss** — off means a position rides to its target or to settlement. You
+  risk the whole stake, but pay no exit fee on losers and are never shaken out by noise.
+- **Wait before re-buying** — the dip is measured against a rolling high that does not
+  decay, so a market sliding all session reads as a fresh dip at every new low. The
+  default 180 minutes means one decline gets one trade.
+
+## Backtesting
+
+Every scan records a snapshot of every market it watches, so the settings questions
+are answerable from data you already have, in seconds, instead of an hour of real
+trading:
+
+```bash
+kalshitrader backtest                    # the settings you are running now
+kalshitrader backtest --dip 20 --no-stop # try something else
+kalshitrader backtest --sweep stop       # compare a range of one setting
+```
+
+```
+   stop  closed  open   win%  break-even       P&L  per trade     fees
+      0       2     4   100%           -     +0.73      +0.37     0.89
+      4       9     0    11%         52%     -7.77      -0.86     3.47
+      6       9     0    22%         68%     -8.06      -0.90     3.48
+      8       7     1    14%         59%     -7.70      -1.10     2.60
+```
+
+**Break-even** is the win rate that configuration needed to stand still, computed from
+what its own trades actually returned rather than from the configured target and stop.
+Beat it and it made money.
+
+It replays through the same `SwingStrategy` the live loop runs — a test fails if the
+two ever disagree on the same history. Three honest limits: it works one ticker at a
+time (snapshots record prices, not titles), so research and form are not replayed;
+fills are taken at the quoted price plus the paper broker's slippage, which is
+optimistic on a thin book; and it can only replay markets the bot was watching.
+
+### What crossing the spread costs
+
+```bash
+kalshitrader backtest --compare-execution
+```
+
+```
+            closed  open   win%       P&L  per trade     fees  fill rate
+taker            7     1    14%     -7.70      -1.10     2.60          -
+maker            7     1    14%     -4.34      -0.62     2.60       100%
+```
+
+The bot currently crosses the spread on both sides. Posting at the bid and selling at
+the ask saves it — at a 2¢ spread that is worth about as much as the entire net edge.
+The catch is that a posted order only fills when somebody trades against it, so the
+replay models that rather than assuming it: a buy posted at B fills when a later
+snapshot shows the bid at or below B *and* the volume counter has moved.
+
+That model cannot see the queue ahead of you, so **treat the fill rate as a ceiling**.
+Execution is still taker-only in live and paper trading; measure first.
+
+Watch the **open** column. A configuration that simply holds its losers shows a
+flattering P&L because only closed trades count.
+
+## Commands
+
+| | |
+| --- | --- |
+| `kalshitrader-app` | dashboard and bot together, one process |
+| `kalshitrader discover` | what is trading on Kalshi now, ranked |
+| `kalshitrader backtest` | replay recorded prices through the strategy |
+| `kalshitrader scan` | one read-only pass; prints signals, places nothing |
+| `kalshitrader run` | the trading loop |
+| `kalshitrader dashboard` | the dashboard only |
+| `kalshitrader diagnose` | what Kalshi returns for your enabled series |
+| `kalshitrader report` | win rate, expectancy, profit factor, fees |
+| `kalshitrader balance` | your Kalshi balance and positions |
+| `kalshitrader halt` | stop new entries; exits keep running |
 
 ## Going live
 
-- Keep `KALSHI_ENV=demo` for at least ~48h of running to confirm fill
-  behavior, fee impact on your thresholds, and that the circuit breakers trip
-  the way you expect.
-- Kalshi charges trading fees (roughly `0.07 × price × (1−price)` per
-  contract, rounded up) — set `Min Profit Threshold` high enough that an arb
-  is still profitable after fees on **both** legs.
-- Switch to live from the dashboard Mode selector (it requires an explicit
-  confirmation) or set `KALSHI_ENV=live` in `.env`. Separate live credentials
-  can be provided via `KALSHI_LIVE_KEY_ID` / `KALSHI_LIVE_PRIVATE_KEY_PATH`.
-- Start with `Max Allocation` at $25–$50 to verify real execution before
-  scaling.
+`TRADING_MODE=live` in `.env`, or Settings → Execution. It makes you type `LIVE` and
+prints your balance and caps first. Paper mode reads real prices and never sends an
+order, so it is a genuine dry run rather than a simulation.
 
-## API endpoints
+## Packaging
 
-All routes except the auth handshake require a logged-in session cookie.
+The code is arranged so it can be frozen into a single downloadable executable that
+someone runs and pastes their keys into:
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET/POST | `/api/auth/status`, `/setup`, `/login`, `/logout` | Dashboard auth |
-| GET/PUT/DELETE | `/api/credentials` | GUI-managed API credentials (masked reads) |
-| GET | `/api/pnl` | Realized trades, cumulative profit curve, PnL by market |
-| GET | `/api/status` | Engine + per-strategy state |
-| GET | `/api/overview` | Equity, cash, PnL, order count |
-| GET | `/api/equity_history` | Equity curve snapshots |
-| GET | `/api/orders` / `/api/fills` / `/api/activity` | History tables |
-| GET | `/api/positions` / `/api/markets` | Live pass-through to Kalshi |
-| GET/PUT | `/api/settings` | Read / live-update bot settings |
-| POST | `/api/bot/{strategy}/{start\|pause\|stop}` | Bot controls |
-| POST | `/api/orders/cancel_all` | Cancel every resting order |
-| POST | `/api/risk/reset` | Clear a tripped circuit breaker |
-| WS | `/ws` | Live activity + overview stream |
+- `kalshitrader/app.py` is one entry point that runs dashboard and bot together.
+- `kalshitrader/paths.py` resolves bundled assets through `sys._MEIPASS`, so the
+  dashboard finds its files inside a bundle, and moves the database and settings to
+  the per-user application directory rather than writing beside the executable.
+- Imports are static, so a bundler can trace them.
 
-## Tests
+The build script itself is not written yet — that is the remaining step.
 
-```bash
-pytest
+## Layout
+
 ```
-
-Covers the risk manager (ceilings, stop-loss breaker), the API client
-(RSA-PSS signature correctness, orderbook price derivation, input validation),
-dashboard auth (password hashing, session tokens), trade PnL accounting
-(average cost, settlements, fees), and the swing trader (dip detection and
-exit rules, entry-slot accounting, and that every settings field the
-dashboard sends actually survives the API round-trip).
-
-GitHub Actions runs the suite on every push and pull request against Python
-3.10 through 3.13 — see `.github/workflows/tests.yml`.
-
-## Notes
-
-- All prices are integer cents (1–99); all money values are integer cents.
-- API hosts default to `api.elections.kalshi.com` (live) and
-  `demo-api.kalshi.co` (demo); override with `KALSHI_API_BASE` if Kalshi
-  moves hosts again.
-- The dashboard binds to `127.0.0.1` by default. It is password-protected,
-  but it serves over plain HTTP — keep it local (or behind a reverse proxy
-  with TLS) rather than exposing the port publicly.
-- Chart.js is vendored at `dashboard/vendor/chart.umd.js`, so the GUI works
-  fully offline with no CDN dependency.
+kalshitrader/
+  app.py          one-process launcher (dashboard + bot)
+  cli.py          every command
+  paths.py        assets and writable state, in a checkout or a bundle
+  kalshi/         signed API client and market models
+  markets/        contest model + series discovery
+  backtest/       replay recorded prices through the real strategy
+  trading/        the loop and the swing strategy
+  analysis/       expected value, fees, signals
+  risk/           sizing, exposure caps, circuit breakers
+  execution/      paper and live brokers
+  tracking/       SQLite store and metrics
+  dashboard/      FastAPI + a dependency-free front end
+  tennis/         optional per-player research
+```

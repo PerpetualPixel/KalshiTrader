@@ -1,55 +1,34 @@
-import pytest
+import base64
 
-from src.auth import AuthManager
-from src.database import Database
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
-
-@pytest.fixture()
-def auth(tmp_path):
-    db = Database(str(tmp_path / "test.db"))
-    return AuthManager(db)
+from kalshitrader.kalshi.auth import RequestSigner, load_private_key, signing_path
 
 
-def test_setup_and_verify_password(auth):
-    assert not auth.is_configured()
-    auth.set_password("hunter2hunter2")
-    assert auth.is_configured()
-    assert auth.verify_password("hunter2hunter2")
-    assert not auth.verify_password("wrong-password")
+def test_signing_path_strips_query():
+    assert signing_path("https://api.elections.kalshi.com/trade-api/v2/markets?limit=5&status=open") == "/trade-api/v2/markets"
 
 
-def test_short_password_rejected(auth):
-    with pytest.raises(ValueError):
-        auth.set_password("short")
+def test_headers_verify_with_public_key(rsa_pem):
+    key = load_private_key(pem=rsa_pem)
+    signer = RequestSigner("key-abc", key)
+    url = "https://demo-api.kalshi.co/trade-api/v2/portfolio/balance?x=1"
+    headers = signer.headers("get", url, timestamp_ms=1700000000000)
+    assert headers["KALSHI-ACCESS-KEY"] == "key-abc"
+    assert headers["KALSHI-ACCESS-TIMESTAMP"] == "1700000000000"
+    message = b"1700000000000GET/trade-api/v2/portfolio/balance"
+    key.public_key().verify(
+        base64.b64decode(headers["KALSHI-ACCESS-SIGNATURE"]),
+        message,
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+        hashes.SHA256(),
+    )
 
 
-def test_token_roundtrip(auth):
-    token = auth.issue_token()
-    assert auth.verify_token(token)
-    assert not auth.verify_token(None)
-    assert not auth.verify_token("garbage")
-    assert not auth.verify_token(token + "x")
-
-
-def test_expired_token_rejected(auth):
-    import hashlib
-    import hmac
-    import time
-
-    past = str(int(time.time()) - 10)
-    sig = hmac.new(auth._secret, past.encode(), hashlib.sha256).hexdigest()
-    assert not auth.verify_token(f"{past}.{sig}")
-
-
-def test_revoke_all_sessions(auth):
-    token = auth.issue_token()
-    auth.revoke_all_sessions()
-    assert not auth.verify_token(token)
-    assert auth.verify_token(auth.issue_token())
-
-
-def test_secret_persists_across_instances(tmp_path):
-    db_path = str(tmp_path / "persist.db")
-    token = AuthManager(Database(db_path)).issue_token()
-    # a new process/instance reading the same DB must accept the token
-    assert AuthManager(Database(db_path)).verify_token(token)
+def test_load_private_key_from_path(tmp_path, rsa_pem):
+    p = tmp_path / "k.pem"
+    p.write_text(rsa_pem)
+    key = load_private_key(path=p)
+    assert key.key_size == 2048
+    assert isinstance(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()), bytes)
