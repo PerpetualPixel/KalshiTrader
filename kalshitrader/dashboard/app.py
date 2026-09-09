@@ -147,6 +147,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None, env
             "counts": store.get_state("tennis_counts", {}), "scan_interval": s.scan_interval_seconds,
             "form_status": store.get_state("form_status", ""), "active_profile": store.get_state("active_profile"),
             "blockers": store.get_state("tennis_blockers", []),
+            "fee_rate": s.fee_rate,  # so the slider can price a target without a round trip
             "config_error": config_error,
             "equity": metrics["equity"], "cash": metrics["cash"], "realized_pnl": metrics["realized_pnl"],
             "daily_pnl": metrics["daily_pnl"], "win_rate": metrics["win_rate"], "trades_closed": metrics["trades_closed"],
@@ -156,6 +157,40 @@ def create_app(settings: Settings | None = None, store: Store | None = None, env
             "open_target_gain": sum(p["target_gain"] for p in positions if p["target_gain"] is not None),
             "recent_closed": store.closed_trades(limit=8), "version": __version__,
         }
+
+    @app.patch("/api/positions/{trade_id}/exit")
+    async def set_exit(trade_id: int, request: Request) -> dict:
+        """Move an open position's sell target or stop.
+
+        The trading loop reads these off the row every cycle, so the change is live on
+        the next scan. A stop of 0 means no stop: ride it to the target or settlement.
+        """
+        s2, _ = _load_or_degrade(env_file)
+        body = await request.json()
+        row = store.get_trade(trade_id)
+        if row is None or row["status"] != "open":
+            raise HTTPException(404, "that position is not open (it may have just closed)")
+        entry = int(row["entry_price"])
+        tp = body.get("take_profit")
+        sl = body.get("stop_loss")
+        if tp is not None:
+            tp = int(tp)
+            # A target at or below what was paid is a guaranteed loss once the exit fee
+            # lands, and Kalshi prices only run 1-99.
+            if not entry < tp <= 99:
+                raise HTTPException(400, f"the sell target must be above the {entry}c you paid, and at most 99c")
+        if sl is not None:
+            sl = int(sl)
+            if not 0 <= sl < entry:
+                raise HTTPException(400, f"the stop must be below the {entry}c you paid (0 means no stop)")
+        updated = store.set_exit_levels(trade_id, take_profit=tp, stop_loss=sl)
+        if updated is None:
+            raise HTTPException(404, "that position is not open (it may have just closed)")
+        count = int(updated["count"])
+        gain = (updated["take_profit"] - entry) * count / 100 - kalshi_fee_cents(updated["take_profit"], s2.fee_rate, count) / 100
+        return {"ok": True, "take_profit": updated["take_profit"], "stop_loss": updated["stop_loss"],
+                "net_gain": gain,
+                "detail": f"Selling at {updated['take_profit']}\u00a2 for about {gain:+.2f} after fees. Live on the next scan."}
 
     @app.post("/api/positions/{trade_id}/close")
     async def close_position(trade_id: int) -> dict:

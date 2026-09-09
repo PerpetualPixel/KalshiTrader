@@ -301,6 +301,30 @@ class Store:
         with self._lock, self._conn as c:
             c.execute("UPDATE trades SET close_requested = 0 WHERE id = ?", (trade_id,))
 
+    def set_exit_levels(self, trade_id: int, *, take_profit: int | None = None,
+                        stop_loss: int | None = None) -> dict | None:
+        """Move an open position's sell target or stop.
+
+        The exit manager reads these off the row every cycle, so a change here is
+        live on the next scan without restarting anything. `stop_loss` of 0 means no
+        stop: ride the position to its target or to settlement.
+        """
+        row = self.get_trade(trade_id)
+        if row is None or row["status"] != "open":
+            return None
+        sets, args = [], []
+        if take_profit is not None:
+            sets.append("take_profit = ?")
+            args.append(int(take_profit))
+        if stop_loss is not None:
+            sets.append("stop_loss = ?")
+            args.append(int(stop_loss))
+        if not sets:
+            return row
+        with self._lock, self._conn as c:
+            c.execute(f"UPDATE trades SET {', '.join(sets)} WHERE id = ? AND status = 'open'", (*args, trade_id))
+        return self.get_trade(trade_id)
+
     def close_trade(self, trade_id: int, *, exit_price: int, exit_reason: str, extra_fees: float = 0.0, status: str = "closed") -> dict:
         t = self.get_trade(trade_id)
         if t is None:

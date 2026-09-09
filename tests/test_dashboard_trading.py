@@ -208,3 +208,43 @@ def test_metrics_survive_a_run_with_no_losing_trades(tmp_path):
     assert m["profit_factor"] is None, "no losses means an undefined profit factor, serialised as null"
     assert m["win_rate"] == 1.0
     assert m["expectancy"] > 0
+
+
+def test_sell_target_can_be_moved_on_an_open_position(tmp_path):
+    """The slider writes straight onto the trade row, which the exit manager reads
+    every cycle - so a new target is live on the next scan with nothing restarted."""
+    store = Store(str(tmp_path / "t.db"))
+    tid = store.open_trade(mode="paper", ticker="KX-T", title="A vs B · A", side="yes", entry_price=40,
+                           count=25, take_profit=48, stop_loss=34, p_true=0.5, fees=0.7,
+                           signal_id=None, close_time=None)
+    client = TestClient(create_app(Settings(db_path=str(tmp_path / "t.db")), store, env_file=str(tmp_path / ".env")))
+    r = client.patch(f"/api/positions/{tid}/exit", json={"take_profit": 60}).json()
+    assert r["take_profit"] == 60
+    assert store.open_trades()[0]["take_profit"] == 60
+    assert 4.5 < r["net_gain"] < 5.0, "25 contracts x 20c, less the exit fee"
+
+
+def test_a_sell_target_that_cannot_win_is_refused(tmp_path):
+    """A target at or below what was paid loses money the moment the exit fee lands,
+    and Kalshi prices only run 1-99."""
+    store = Store(str(tmp_path / "t.db"))
+    tid = store.open_trade(mode="paper", ticker="KX-T", title="A vs B · A", side="yes", entry_price=40,
+                           count=10, take_profit=48, stop_loss=34, p_true=0.5, fees=0.3,
+                           signal_id=None, close_time=None)
+    client = TestClient(create_app(Settings(db_path=str(tmp_path / "t.db")), store, env_file=str(tmp_path / ".env")))
+    for bad in (40, 39, 0, 100):
+        assert client.patch(f"/api/positions/{tid}/exit", json={"take_profit": bad}).status_code == 400
+    assert client.patch(f"/api/positions/{tid}/exit", json={"stop_loss": 45}).status_code == 400
+    assert client.patch(f"/api/positions/{tid}/exit", json={"stop_loss": 0}).json()["stop_loss"] == 0
+    assert store.open_trades()[0]["take_profit"] == 48, "nothing was changed by the refusals"
+
+
+def test_moving_the_exit_on_a_closed_position_is_refused(tmp_path):
+    store = Store(str(tmp_path / "t.db"))
+    tid = store.open_trade(mode="paper", ticker="KX-T", title="A vs B · A", side="yes", entry_price=40,
+                           count=10, take_profit=48, stop_loss=34, p_true=0.5, fees=0.3,
+                           signal_id=None, close_time=None)
+    store.close_trade(tid, exit_price=48, exit_reason="take-profit")
+    client = TestClient(create_app(Settings(db_path=str(tmp_path / "t.db")), store, env_file=str(tmp_path / ".env")))
+    assert client.patch(f"/api/positions/{tid}/exit", json={"take_profit": 60}).status_code == 404
+    assert store.set_exit_levels(tid, take_profit=60) is None

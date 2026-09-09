@@ -29,6 +29,11 @@
              padding:7px 12px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap }
   .cashout:hover:not(:disabled) { border-color:var(--bad); color:var(--bad) }
   .cashout:disabled { opacity:.55; cursor:default }
+  .sell-at { grid-column:1/-1; display:flex; align-items:center; gap:12px; padding-top:6px }
+  .sell-at label { font-size:12px; color:var(--muted); white-space:nowrap }
+  .sell-at label b { color:var(--ink); font-size:14px; font-variant-numeric:tabular-nums }
+  .sell-at .gain { color:var(--good); font-variant-numeric:tabular-nums }
+  .sell-at input[type=range] { flex:1; max-width:420px; accent-color:var(--good); cursor:pointer }
   table { width:100%; border-collapse:collapse; font-size:14px } th,td { text-align:left; padding:8px 8px; border-bottom:1px solid var(--line); vertical-align:top } th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.4px; font-weight:500 }
   td.num { text-align:right; font-variant-numeric:tabular-nums } .why { color:var(--ink2); font-size:12.5px }
   .empty { color:var(--muted); padding:16px 0 } .foot { color:var(--muted); font-size:12.5px } .foot a { color:var(--accent) }
@@ -213,6 +218,9 @@ const ts = (s) => (s ? s.replace('T', ' ').replace(/\+00:00|Z/, '').slice(5, 16)
 const api = async (path, opts) => { const r = await fetch(path, opts); if (!r.ok) { let m = r.status + ''; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); } return r.json(); };
 
 let toastTimer, lastScan = null, lastScanError = null, scanSuffix = '';
+// The overview refreshes every 3s; re-rendering under a dragging thumb would snap
+// it back to the saved value mid-drag, so that row is left alone until released.
+let editingTarget = null;
 const lastQuotes = new Map();
 function toast(msg, kind = '') { const t = $('#toast'); t.textContent = msg; t.className = 'toast show ' + kind; clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = 'toast'), 3500); }
 
@@ -238,7 +246,8 @@ async function refresh() {
     $('#keys').innerHTML = `<i></i>${$('#keys').textContent}`;
 
     const P = $('#positions');
-    P.innerHTML = o.positions.length ? o.positions.map((t) => { const [m, p] = playerFrom(t.title); return `
+    if (editingTarget && P.querySelector(`.sell-at[data-trade="${editingTarget}"]`)) P.dataset.held = '1';
+    else P.innerHTML = o.positions.length ? o.positions.map((t) => { const [m, p] = playerFrom(t.title); return `
       <div class="pos"><div><div class="m">${esc(p || t.ticker)}</div><div class="s">${esc(m)} · ${t.count} contracts · ${t.side.toUpperCase()}</div></div>
       <div><div class="k">Bought</div><div class="v">${t.entry_price}¢</div></div>
       <div><div class="k">Sells at</div><div class="v up">${t.take_profit}¢</div></div>
@@ -248,7 +257,10 @@ async function refresh() {
       <div><div class="k">If it wins</div><div class="v up">${t.target_gain != null ? '+' + usd(t.target_gain) : '–'}</div><div class="s">${t.target_payout != null ? usd(t.target_payout) + ' back' : ''}</div></div>
       <div><div class="k">${t.stop_loss ? 'If stopped' : 'If it loses'}</div><div class="v down">${t.at_risk != null ? '−' + usd(t.at_risk) : '–'}</div><div class="s">${t.stop_loss ? (t.stop_payout != null ? usd(t.stop_payout) + ' back' : '') : 'nothing back'}</div></div>
       <div><div class="k">P&amp;L</div><div class="v ${sign(t.unrealized)}">${usd(t.unrealized)}</div></div>
-      <div><button class="cashout" data-trade="${t.id}"${t.close_requested ? ' disabled' : ''}>${t.close_requested ? 'Selling…' : 'Cash out'}</button></div></div>`; }).join('')
+      <div><button class="cashout" data-trade="${t.id}"${t.close_requested ? ' disabled' : ''}>${t.close_requested ? 'Selling…' : 'Cash out'}</button></div>
+      <div class="sell-at" data-trade="${t.id}" data-entry="${t.entry_price}" data-count="${t.count}" data-fee="${o.fee_rate ?? 0.07}" data-paid="${t.fees ?? 0}">
+        <label>Sell at <b class="tp">${t.take_profit}¢</b> <span class="gain">${t.target_gain != null ? '+' + usd(t.target_gain) : ''}</span></label>
+        <input type="range" min="${t.entry_price + 1}" max="99" value="${t.take_profit}" step="1"></div></div>`; }).join('')
       : '<div class="empty">Nothing open. The bot buys only when a price dips far enough on a market you switched on.</div>';
 
     const W = $('#watch tbody');
@@ -438,6 +450,43 @@ document.addEventListener('click', async (e) => {
     await setMarkets(btn.classList.contains('on') ? on.filter((x) => x !== ticker) : [...on, ticker]);
   } catch (err) { toast('Could not change markets: ' + err.message, 'err'); }
   marketsBusy = false;
+});
+
+// ---- sell-at slider --------------------------------------------------------
+// Kalshi's own fee formula, so the dollars beside the slider are what you keep.
+const feeCents = (price, count, rate) => rate * (price / 100) * (1 - price / 100) * 100 * count;
+
+function previewTarget(box) {
+  const tp = +box.querySelector('input').value, entry = +box.dataset.entry;
+  const count = +box.dataset.count, rate = +box.dataset.fee || 0.07;
+  // Both fees, exactly as the server counts them: the entry fee is already spent, so
+  // leaving it out would make the number jump the moment the drag is released.
+  const gain = ((tp - entry) * count - feeCents(tp, count, rate)) / 100 - (+box.dataset.paid || 0);
+  box.querySelector('.tp').textContent = tp + '¢';
+  const g = box.querySelector('.gain');
+  g.textContent = (gain >= 0 ? '+' : '') + usd(gain);
+  g.style.color = gain >= 0 ? 'var(--good)' : 'var(--bad)';
+}
+
+document.addEventListener('input', (e) => {
+  const box = e.target.closest('.sell-at');
+  if (!box) return;
+  editingTarget = box.dataset.trade;
+  previewTarget(box);
+});
+
+document.addEventListener('change', async (e) => {
+  const box = e.target.closest('.sell-at');
+  if (!box) return;
+  try {
+    const r = await api(`/api/positions/${box.dataset.trade}/exit`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ take_profit: +box.querySelector('input').value }),
+    });
+    toast(r.detail, 'ok');
+  } catch (err) { toast('Could not move the target: ' + err.message, 'err'); }
+  editingTarget = null;
+  refresh();
 });
 
 $('#discover').onclick = async () => {
