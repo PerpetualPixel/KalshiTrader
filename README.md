@@ -95,12 +95,46 @@ Two switches matter here:
   decay, so a market sliding all session reads as a fresh dip at every new low. The
   default 180 minutes means one decline gets one trade.
 
+## Backtesting
+
+Every scan records a snapshot of every market it watches, so the settings questions
+are answerable from data you already have, in seconds, instead of an hour of real
+trading:
+
+```bash
+kalshitrader backtest                    # the settings you are running now
+kalshitrader backtest --dip 20 --no-stop # try something else
+kalshitrader backtest --sweep stop       # compare a range of one setting
+```
+
+```
+   stop  closed  open   win%  break-even       P&L  per trade     fees
+      0       2     4   100%           -     +0.73      +0.37     0.89
+      4       9     0    11%         52%     -7.77      -0.86     3.47
+      6       9     0    22%         68%     -8.06      -0.90     3.48
+      8       7     1    14%         59%     -7.70      -1.10     2.60
+```
+
+**Break-even** is the win rate that configuration needed to stand still, computed from
+what its own trades actually returned rather than from the configured target and stop.
+Beat it and it made money.
+
+It replays through the same `SwingStrategy` the live loop runs — a test fails if the
+two ever disagree on the same history. Three honest limits: it works one ticker at a
+time (snapshots record prices, not titles), so research and form are not replayed;
+fills are taken at the quoted price plus the paper broker's slippage, which is
+optimistic on a thin book; and it can only replay markets the bot was watching.
+
+Watch the **open** column. A configuration that simply holds its losers shows a
+flattering P&L because only closed trades count.
+
 ## Commands
 
 | | |
 | --- | --- |
 | `kalshitrader-app` | dashboard and bot together, one process |
 | `kalshitrader discover` | what is trading on Kalshi now, ranked |
+| `kalshitrader backtest` | replay recorded prices through the strategy |
 | `kalshitrader scan` | one read-only pass; prints signals, places nothing |
 | `kalshitrader run` | the trading loop |
 | `kalshitrader dashboard` | the dashboard only |
@@ -137,6 +171,7 @@ kalshitrader/
   paths.py        assets and writable state, in a checkout or a bundle
   kalshi/         signed API client and market models
   markets/        contest model + series discovery
+  backtest/       replay recorded prices through the real strategy
   trading/        the loop and the swing strategy
   analysis/       expected value, fees, signals
   risk/           sizing, exposure caps, circuit breakers

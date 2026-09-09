@@ -1,0 +1,280 @@
+"""Replay the prices the bot already recorded, through the strategy it actually runs.
+
+Every strategy question - is 14c the right dip, does a stop help, is riding to
+settlement better - is answerable from the snapshots already in the database, in
+seconds, instead of an hour of real trading. This runs the same `SwingStrategy` and
+the same fee arithmetic as the live loop, so the answers are about the strategy and
+not about a second implementation of it that drifted.
+
+What it is honest about:
+
+  * snapshots record prices, not titles or series, so the replay works one ticker at
+    a time. That matches how the swing rules decide anyway - the dip, the stabilisation
+    and the value gates all look at a single leg's own history - but it means research
+    and form assessments are not replayed. Price-only entries are exactly what is
+    modelled, which is the mode this bot runs in.
+  * fills are taken at the quoted ask and bid with the paper broker's slippage. That
+    is optimistic on thin books: a real order can move the price it is filling at.
+  * it can only replay markets the bot was watching. A dip in a market that was
+    switched off was never recorded, so it cannot be tested.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from kalshitrader.analysis.ev import kalshi_fee_cents
+from kalshitrader.config import Settings
+from kalshitrader.kalshi.models import Market
+from kalshitrader.markets.contest import NO_SIDE, Contest, Leg
+from kalshitrader.risk.rules import PortfolioState, RiskManager
+from kalshitrader.trading.strategy import SwingStrategy
+
+log = logging.getLogger(__name__)
+
+
+class ReplayStore:
+    """The price history as it looked at one moment, plus the trades made so far.
+
+    The strategy only ever asks a store two things - a ticker's snapshots and when it
+    was last closed out - so this is the whole surface it needs.
+    """
+
+    def __init__(self, history: dict[str, list[dict]]):
+        self.history = history
+        self.now = ""  # ISO timestamp of the simulated clock
+        self.exits: dict[str, str] = {}
+
+    def snapshots(self, ticker: str, limit: int = 500) -> list[dict]:
+        rows = [r for r in self.history.get(ticker, []) if r["ts"] <= self.now]
+        return rows[-limit:]
+
+    def last_exit_at(self, ticker: str, mode: str | None = None) -> str | None:
+        return self.exits.get(ticker)
+
+
+@dataclass
+class BacktestResult:
+    settings: dict
+    trades: list[dict] = field(default_factory=list)
+    tickers: int = 0
+    snapshots: int = 0
+    span_hours: float = 0.0
+    skipped_no_history: int = 0
+
+    @property
+    def closed(self) -> list[dict]:
+        return [t for t in self.trades if t["exit_price"] is not None]
+
+    @property
+    def wins(self) -> list[dict]:
+        return [t for t in self.closed if t["pnl"] > 0]
+
+    @property
+    def losses(self) -> list[dict]:
+        return [t for t in self.closed if t["pnl"] <= 0]
+
+    @property
+    def pnl(self) -> float:
+        return sum(t["pnl"] for t in self.closed)
+
+    @property
+    def fees(self) -> float:
+        return sum(t["fees"] for t in self.closed)
+
+    @property
+    def win_rate(self) -> float:
+        return len(self.wins) / len(self.closed) if self.closed else 0.0
+
+    @property
+    def expectancy(self) -> float:
+        return self.pnl / len(self.closed) if self.closed else 0.0
+
+    @property
+    def profit_factor(self) -> float | None:
+        lost = -sum(t["pnl"] for t in self.losses)
+        won = sum(t["pnl"] for t in self.wins)
+        if lost > 0:
+            return won / lost
+        return None  # undefined until something loses
+
+    @property
+    def break_even_win_rate(self) -> float | None:
+        """The win rate this configuration needs just to stand still.
+
+        Measured from what the trades actually returned, not from the configured
+        target and stop, because fees and early exits move both.
+        """
+        if not self.wins or not self.losses:
+            return None
+        avg_win = sum(t["pnl"] for t in self.wins) / len(self.wins)
+        avg_loss = -sum(t["pnl"] for t in self.losses) / len(self.losses)
+        return avg_loss / (avg_win + avg_loss) if (avg_win + avg_loss) else None
+
+    @property
+    def open_at_end(self) -> int:
+        return len(self.trades) - len(self.closed)
+
+    def summary(self) -> dict:
+        return {
+            "trades": len(self.closed), "open_at_end": self.open_at_end,
+            "win_rate": self.win_rate, "pnl": self.pnl, "fees": self.fees,
+            "expectancy": self.expectancy, "profit_factor": self.profit_factor,
+            "break_even_win_rate": self.break_even_win_rate,
+            "tickers": self.tickers, "snapshots": self.snapshots, "span_hours": self.span_hours,
+        }
+
+
+def load_history(store, *, since: str | None = None, tickers: list[str] | None = None) -> dict[str, list[dict]]:
+    """Every recorded snapshot, grouped by ticker and ordered oldest first."""
+    rows = store.all_snapshots(since=since) if hasattr(store, "all_snapshots") else []
+    history: dict[str, list[dict]] = {}
+    keep = {t.upper() for t in tickers} if tickers else None
+    for r in rows:
+        if keep and r["ticker"].upper() not in keep:
+            continue
+        history.setdefault(r["ticker"], []).append(dict(r))
+    for rows_for in history.values():
+        rows_for.sort(key=lambda r: r["ts"])
+    return history
+
+
+def _market_from(snapshot: dict, ticker: str) -> Market:
+    """A Market carrying the prices we recorded and nothing we did not."""
+    return Market.from_api({
+        "ticker": ticker, "event_ticker": ticker, "series_ticker": ticker.split("-")[0],
+        "title": ticker, "yes_sub_title": "", "status": "active",
+        "yes_bid": snapshot["yes_bid"], "yes_ask": snapshot["yes_ask"],
+        "no_bid": snapshot["no_bid"], "no_ask": snapshot["no_ask"],
+        "last_price": snapshot["last_price"], "volume_24h": snapshot.get("volume_24h") or 0,
+        "open_interest": snapshot.get("open_interest") or 0, "volume": snapshot.get("volume") or 0,
+    })
+
+
+def run_backtest(store, settings: Settings, *, since: str | None = None,
+                 tickers: list[str] | None = None, history: dict | None = None) -> BacktestResult:
+    """Replay recorded prices through the strategy with these settings."""
+    history = history if history is not None else load_history(store, since=since, tickers=tickers)
+    result = BacktestResult(settings=_settings_digest(settings))
+    if not history:
+        return result
+
+    replay = ReplayStore(history)
+    strategy = SwingStrategy(settings, replay, RiskManager(settings))
+    stamps = sorted({r["ts"] for rows in history.values() for r in rows})
+    result.tickers, result.snapshots = len(history), sum(len(v) for v in history.values())
+    result.span_hours = _hours_between(stamps[0], stamps[-1])
+
+    cash = settings.paper_starting_cash
+    open_trades: dict[str, dict] = {}
+
+    for stamp in stamps:
+        replay.now = stamp
+        now = _parse(stamp)
+        priced = {t: rows[-1] for t, rows in ((t, replay.snapshots(t, limit=1)) for t in history) if rows}
+
+        # Exits first, exactly as the live loop orders them: a position that should
+        # have closed must not still be counted against the exposure cap.
+        for ticker, trade in list(open_trades.items()):
+            snap = priced.get(ticker)
+            if snap is None:
+                continue
+            bid = snap["yes_bid"] if trade["side"] == "yes" else snap["no_bid"]
+            reason = strategy.risk.exit_reason(trade["side"], trade["entry_price"], trade["take_profit"],
+                                               trade["stop_loss"], bid, trade["p_true"])
+            if not reason:
+                continue
+            cash += _close(trade, bid, reason, stamp, settings)
+            replay.exits[ticker] = stamp
+            del open_trades[ticker]
+
+        exposure = sum(t["entry_price"] * t["count"] / 100 for t in open_trades.values())
+        state = PortfolioState(
+            cash_dollars=cash, exposure_dollars=exposure, open_positions=len(open_trades),
+            daily_pnl_dollars=0.0, consecutive_losses=0,
+            open_tickers=set(open_trades), halted=False,
+        )
+        for ticker, snap in priced.items():
+            if ticker in open_trades:
+                continue
+            contest, leg_name = _contest_for(ticker, snap)
+            signal = strategy.evaluate_leg(contest, leg_name, contest.legs[leg_name], None, None, state, now)
+            if not signal.is_trade:
+                continue
+            trade = _open(signal, ticker, stamp, settings)
+            cost = trade["entry_price"] * trade["count"] / 100 + trade["fees"]
+            if cost > cash:
+                continue
+            cash -= cost
+            open_trades[ticker] = trade
+            result.trades.append(trade)
+            exposure += trade["entry_price"] * trade["count"] / 100
+            state = PortfolioState(cash_dollars=cash, exposure_dollars=exposure,
+                                   open_positions=len(open_trades), daily_pnl_dollars=0.0,
+                                   consecutive_losses=0, open_tickers=set(open_trades), halted=False)
+    return result
+
+
+def _contest_for(ticker: str, snap: dict) -> tuple[Contest, str]:
+    """A one-market contest around a recorded ticker, so the real strategy can judge it."""
+    market = _market_from(snap, ticker)
+    name = ticker
+    legs = {name: Leg(name, ticker, "yes", market), NO_SIDE: Leg(NO_SIDE, ticker, "no", market)}
+    return Contest(ticker, name, NO_SIDE, legs, ticker.split("-")[0], market.close_time, [market], ticker.split("-")[0]), name
+
+
+def _open(signal, ticker: str, stamp: str, s: Settings) -> dict:
+    entry = min(99, signal.entry_price + s.paper_slippage_cents)
+    return {
+        "ticker": ticker, "side": "yes" if signal.action.value.endswith("YES") else "no",
+        "entry_price": entry, "count": signal.size, "take_profit": signal.take_profit,
+        "stop_loss": signal.stop_loss, "p_true": signal.p_true, "opened_at": stamp,
+        "fees": kalshi_fee_cents(entry, s.fee_rate, signal.size, round_up=True) / 100,
+        "exit_price": None, "exit_reason": None, "closed_at": None, "pnl": 0.0,
+    }
+
+
+def _close(trade: dict, bid: int, reason: str, stamp: str, s: Settings) -> float:
+    exit_price = max(1, bid - s.paper_slippage_cents)
+    exit_fee = kalshi_fee_cents(exit_price, s.fee_rate, trade["count"], round_up=True) / 100
+    trade["exit_price"], trade["exit_reason"], trade["closed_at"] = exit_price, reason, stamp
+    trade["fees"] += exit_fee
+    proceeds = exit_price * trade["count"] / 100
+    trade["pnl"] = proceeds - trade["entry_price"] * trade["count"] / 100 - trade["fees"]
+    return proceeds - exit_fee
+
+
+def _settings_digest(s: Settings) -> dict:
+    return {"dip_cents": s.dip_cents, "take_profit_cents": s.take_profit_cents,
+            "stop_loss_cents": s.stop_loss_cents, "use_stop_loss": s.use_stop_loss,
+            "min_edge_cents": s.min_edge_cents, "require_stabilized": s.require_stabilized,
+            "reentry_cooldown_minutes": s.reentry_cooldown_minutes,
+            "max_position_dollars": s.max_position_dollars, "kelly_fraction": s.kelly_fraction}
+
+
+def _parse(stamp: str) -> datetime:
+    try:
+        dt = datetime.fromisoformat(stamp)
+    except ValueError:
+        return datetime.now(timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _hours_between(a: str, b: str) -> float:
+    return round((_parse(b) - _parse(a)).total_seconds() / 3600, 2)
+
+
+def sweep_settings(store, base: Settings, variations: list[dict], *, since: str | None = None) -> list[BacktestResult]:
+    """Run the same history through several configurations, so they can be compared.
+
+    The history is loaded once and shared: reading it per run would dominate the time
+    and, worse, invite comparing runs over subtly different spans.
+    """
+    from dataclasses import replace
+
+    history = load_history(store, since=since)
+    out = []
+    for changes in variations:
+        out.append(run_backtest(store, replace(base, **changes), history=history))
+    return out

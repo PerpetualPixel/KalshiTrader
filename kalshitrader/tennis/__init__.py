@@ -1,4 +1,6 @@
-from kalshitrader.markets.contest import Contest, find_contests
-from kalshitrader.trading.strategy import SwingStrategy
+"""Optional, tennis-specific research: player form and a Claude analyst.
 
-__all__ = ["SwingStrategy", "Contest", "find_contests"]
+Everything generic - the contest model, the strategy, the loop - lives in
+`markets/` and `trading/`. This package only holds what is genuinely about players,
+and the bot trades perfectly well without any of it.
+"""

@@ -394,6 +394,70 @@ def cmd_discover(args, s: Settings) -> int:
     return 0
 
 
+def cmd_backtest(args, s: Settings) -> int:
+    """Replay recorded prices through the strategy, with one or many configurations."""
+    from dataclasses import replace
+
+    from kalshitrader.backtest import run_backtest, sweep_settings
+    from kalshitrader.tracking.db import Store
+
+    store = Store(s.db_path)
+    first, last, rows = store.snapshot_span()
+    if not rows:
+        print("No price history recorded yet. The bot writes a snapshot for every market it")
+        print("watches on every scan, so run it for a while first - even paused, it records.")
+        return 1
+    print(f"{rows:,} snapshots from {first} to {last}\n")
+
+    if args.sweep:
+        # One axis at a time: a grid over every knob invites reading noise as a result.
+        variations = [{"dip_cents": d} for d in (6, 8, 10, 12, 14, 18, 24, 30)] if args.sweep == "dip" \
+            else [{"stop_loss_cents": v, "use_stop_loss": v > 0} for v in (0, 4, 6, 8, 12, 20)] if args.sweep == "stop" \
+            else [{"take_profit_cents": v} for v in (4, 6, 8, 10, 14, 20)]
+        results = sweep_settings(store, s, variations, since=args.since)
+        label = {"dip": "dip", "stop": "stop", "target": "target"}[args.sweep]
+        print(f"{label:>7s} {'closed':>7s} {'open':>5s} {'win%':>6s} {'break-even':>11s} {'P&L':>9s} {'per trade':>10s} {'fees':>8s}")
+        unfinished = False
+        for changes, r in zip(variations, results, strict=True):
+            value = list(changes.values())[0]
+            be = f"{r.break_even_win_rate * 100:.0f}%" if r.break_even_win_rate is not None else "-"
+            unfinished = unfinished or r.open_at_end > len(r.closed)
+            print(f"{value:>7} {len(r.closed):>7d} {r.open_at_end:>5d} {r.win_rate * 100:>5.0f}% {be:>11s} "
+                  f"{r.pnl:>+9.2f} {r.expectancy:>+10.2f} {r.fees:>8.2f}")
+        print("\nBreak-even is the win rate that configuration needed to stand still, from what")
+        print("its own trades returned. Beat it and it made money; miss it and it did not.")
+        if unfinished:
+            print("\nSome rows left more positions open than they closed. Those P&L figures count")
+            print("only what finished, so they flatter a configuration that simply holds losers -")
+            print("read them alongside the open column, or replay a longer history.")
+        return 0
+
+    settings = replace(s, **{k: v for k, v in (
+        ("dip_cents", args.dip), ("take_profit_cents", args.target),
+        ("stop_loss_cents", args.stop), ("min_edge_cents", args.edge)) if v is not None})
+    if args.no_stop:
+        settings = replace(settings, use_stop_loss=False)
+    r = run_backtest(store, settings, since=args.since)
+    print(f"settings   {r.settings}")
+    print(f"replayed   {r.tickers} tickers, {r.snapshots:,} snapshots, {r.span_hours:.1f}h\n")
+    if not r.closed:
+        print(f"No trades closed{' (' + str(r.open_at_end) + ' still open at the end)' if r.open_at_end else ''}.")
+        print("Nothing in this history met the entry rules - loosen the dip, or record more.")
+        return 0
+    be = f"{r.break_even_win_rate * 100:.0f}%" if r.break_even_win_rate is not None else "n/a"
+    pf = f"{r.profit_factor:.2f}" if r.profit_factor is not None else "inf"
+    print(f"trades     {len(r.closed)} closed, {r.open_at_end} open at the end")
+    print(f"win rate   {r.win_rate * 100:.0f}%   (needed {be} to break even)")
+    print(f"P&L        {r.pnl:+.2f}   per trade {r.expectancy:+.2f}   profit factor {pf}")
+    print(f"fees       {r.fees:.2f}   ({r.fees / abs(r.pnl) * 100:.0f}% the size of the P&L)" if r.pnl else f"fees       {r.fees:.2f}")
+    if args.trades:
+        print(f"\n{'ticker':34s} {'in':>4s} {'out':>4s} {'qty':>5s} {'P&L':>8s}  why")
+        for t in r.closed[: args.trades]:
+            print(f"{t['ticker'][:34]:34s} {t['entry_price']:>4d} {t['exit_price']:>4d} "
+                  f"{t['count']:>5d} {t['pnl']:>+8.2f}  {t['exit_reason']}")
+    return 0
+
+
 def cmd_balance(args, s: Settings) -> int:
     client = _client(s)
     if not client.authenticated:
@@ -476,6 +540,17 @@ def build_parser() -> argparse.ArgumentParser:
     dp.add_argument("--min-volume", type=int, default=1000, help="hide series quieter than this")
     dp.add_argument("--per-category", type=int, default=8)
     dp.set_defaults(fn=cmd_discover)
+
+    bt = sub.add_parser("backtest", help="replay recorded prices through the strategy")
+    bt.add_argument("--dip", type=int, default=None, help="override the dip required to buy")
+    bt.add_argument("--target", type=int, default=None, help="override the take-profit")
+    bt.add_argument("--stop", type=int, default=None, help="override the stop loss")
+    bt.add_argument("--edge", type=float, default=None, help="override the minimum edge")
+    bt.add_argument("--no-stop", action="store_true", help="ride positions to target or settlement")
+    bt.add_argument("--since", default=None, help="ISO timestamp; replay only from here")
+    bt.add_argument("--sweep", choices=["dip", "stop", "target"], help="compare a range of one setting")
+    bt.add_argument("--trades", type=int, default=0, help="also print this many individual trades")
+    bt.set_defaults(fn=cmd_backtest)
 
     mp = sub.add_parser("markets", help="list open markets")
     mp.add_argument("--series", default=None)

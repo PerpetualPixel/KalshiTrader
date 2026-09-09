@@ -405,6 +405,18 @@ class Store:
         rows.reverse()
         return rows
 
+    def all_snapshots(self, since: str | None = None, limit: int = 2_000_000) -> list[dict]:
+        """Every recorded snapshot, oldest first - the raw material for a backtest."""
+        if since:
+            return self._q("SELECT * FROM market_snapshots WHERE ts >= ? ORDER BY id LIMIT ?", (since, limit))
+        return self._q("SELECT * FROM market_snapshots ORDER BY id LIMIT ?", (limit,))
+
+    def snapshot_span(self) -> tuple[str | None, str | None, int]:
+        """Oldest timestamp, newest timestamp and how many rows there are."""
+        rows = self._q("SELECT MIN(ts) a, MAX(ts) b, COUNT(*) n FROM market_snapshots")
+        r = rows[0] if rows else {}
+        return r.get("a"), r.get("b"), r.get("n") or 0
+
     def latest_snapshots(self, limit: int = 100) -> list[dict]:
         return self._q(
             "SELECT s.* FROM market_snapshots s JOIN (SELECT ticker, MAX(id) AS mid FROM market_snapshots GROUP BY ticker) m"
