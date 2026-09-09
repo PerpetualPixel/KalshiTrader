@@ -55,6 +55,21 @@ class ReplayStore:
 
 
 @dataclass
+class PendingOrder:
+    """A maker order posted into the book, waiting for someone to trade against it."""
+
+    ticker: str
+    side: str
+    price: int
+    count: int
+    posted_at: str
+    volume_at_post: int
+    take_profit: int
+    stop_loss: int
+    p_true: float
+
+
+@dataclass
 class BacktestResult:
     settings: dict
     trades: list[dict] = field(default_factory=list)
@@ -62,6 +77,12 @@ class BacktestResult:
     snapshots: int = 0
     span_hours: float = 0.0
     skipped_no_history: int = 0
+    posted: int = 0  # maker orders placed
+    unfilled: int = 0  # maker orders that expired without a counterparty
+
+    @property
+    def fill_rate(self) -> float | None:
+        return (self.posted - self.unfilled) / self.posted if self.posted else None
 
     @property
     def closed(self) -> list[dict]:
@@ -152,9 +173,22 @@ def _market_from(snapshot: dict, ticker: str) -> Market:
     })
 
 
-def run_backtest(store, settings: Settings, *, since: str | None = None,
-                 tickers: list[str] | None = None, history: dict | None = None) -> BacktestResult:
-    """Replay recorded prices through the strategy with these settings."""
+def run_backtest(store, settings: Settings, *, since: str | None = None, tickers: list[str] | None = None,
+                 history: dict | None = None, maker: bool = False, maker_ttl_seconds: int = 300) -> BacktestResult:
+    """Replay recorded prices through the strategy with these settings.
+
+    `maker=True` models posting at the bid and selling at the ask instead of crossing
+    the spread. That saves the spread on both sides, which at these prices is worth
+    about as much as the whole net edge - but a posted order only fills when someone
+    trades against it, so it is modelled rather than assumed:
+
+        a buy posted at B fills when a later snapshot, inside the TTL, shows the bid
+        at or below B *and* the cumulative volume counter has moved - somebody
+        actually traded while the price was at your level.
+
+    That is a proxy, not a queue simulation: it cannot see how much size was ahead of
+    you at the same price, so it is optimistic. Read the fill rate alongside the P&L.
+    """
     history = history if history is not None else load_history(store, since=since, tickers=tickers)
     result = BacktestResult(settings=_settings_digest(settings))
     if not history:
@@ -168,11 +202,34 @@ def run_backtest(store, settings: Settings, *, since: str | None = None,
 
     cash = settings.paper_starting_cash
     open_trades: dict[str, dict] = {}
+    pending: dict[str, PendingOrder] = {}
 
     for stamp in stamps:
         replay.now = stamp
         now = _parse(stamp)
         priced = {t: rows[-1] for t, rows in ((t, replay.snapshots(t, limit=1)) for t in history) if rows}
+
+        # Resting maker orders: fill the ones the market came to, expire the rest.
+        for ticker, order in list(pending.items()):
+            snap = priced.get(ticker)
+            if snap is None:
+                continue
+            bid = snap["yes_bid"] if order.side == "yes" else snap["no_bid"]
+            traded = (snap.get("volume") or 0) > order.volume_at_post
+            if bid and bid <= order.price and traded:
+                trade = _from_pending(order, stamp, settings)
+                cost = trade["entry_price"] * trade["count"] / 100 + trade["fees"]
+                del pending[ticker]
+                if cost > cash:
+                    continue
+                cash -= cost
+                open_trades[ticker] = trade
+                result.trades.append(trade)
+            elif (_parse(stamp) - _parse(order.posted_at)).total_seconds() > maker_ttl_seconds:
+                # Nobody traded at our price inside the window. A real order would be
+                # cancelled here rather than left resting into a moved market.
+                del pending[ticker]
+                result.unfilled += 1
 
         # Exits first, exactly as the live loop orders them: a position that should
         # have closed must not still be counted against the exposure cap.
@@ -185,7 +242,9 @@ def run_backtest(store, settings: Settings, *, since: str | None = None,
                                                trade["stop_loss"], bid, trade["p_true"])
             if not reason:
                 continue
-            cash += _close(trade, bid, reason, stamp, settings)
+            # A maker exit rests at the ask; the taker exit hits the bid.
+            out = (snap["yes_ask"] if trade["side"] == "yes" else snap["no_ask"]) if maker else bid
+            cash += _close(trade, out or bid, reason, stamp, settings, maker=maker)
             replay.exits[ticker] = stamp
             del open_trades[ticker]
 
@@ -196,11 +255,20 @@ def run_backtest(store, settings: Settings, *, since: str | None = None,
             open_tickers=set(open_trades), halted=False,
         )
         for ticker, snap in priced.items():
-            if ticker in open_trades:
+            if ticker in open_trades or ticker in pending:
                 continue
             contest, leg_name = _contest_for(ticker, snap)
             signal = strategy.evaluate_leg(contest, leg_name, contest.legs[leg_name], None, None, state, now)
             if not signal.is_trade:
+                continue
+            if maker:
+                # Post at the bid rather than crossing to the ask. Nothing is owned
+                # until somebody trades against it, so no cash moves yet.
+                post_at = max(1, signal.entry_price - signal.spread)
+                pending[ticker] = PendingOrder(ticker, "yes" if signal.action.value.endswith("YES") else "no",
+                                               post_at, signal.size, stamp, snap.get("volume") or 0,
+                                               signal.take_profit, signal.stop_loss, signal.p_true)
+                result.posted += 1
                 continue
             trade = _open(signal, ticker, stamp, settings)
             cost = trade["entry_price"] * trade["count"] / 100 + trade["fees"]
@@ -235,8 +303,19 @@ def _open(signal, ticker: str, stamp: str, s: Settings) -> dict:
     }
 
 
-def _close(trade: dict, bid: int, reason: str, stamp: str, s: Settings) -> float:
-    exit_price = max(1, bid - s.paper_slippage_cents)
+def _from_pending(order: PendingOrder, stamp: str, s: Settings) -> dict:
+    """A maker order that found a counterparty becomes a position at the price posted."""
+    return {
+        "ticker": order.ticker, "side": order.side, "entry_price": order.price, "count": order.count,
+        "take_profit": order.take_profit, "stop_loss": order.stop_loss, "p_true": order.p_true,
+        "opened_at": stamp, "fees": kalshi_fee_cents(order.price, s.fee_rate, order.count, round_up=True) / 100,
+        "exit_price": None, "exit_reason": None, "closed_at": None, "pnl": 0.0,
+    }
+
+
+def _close(trade: dict, bid: int, reason: str, stamp: str, s: Settings, maker: bool = False) -> float:
+    # A resting sell is filled at the price posted; crossing the spread pays slippage.
+    exit_price = bid if maker else max(1, bid - s.paper_slippage_cents)
     exit_fee = kalshi_fee_cents(exit_price, s.fee_rate, trade["count"], round_up=True) / 100
     trade["exit_price"], trade["exit_reason"], trade["closed_at"] = exit_price, reason, stamp
     trade["fees"] += exit_fee

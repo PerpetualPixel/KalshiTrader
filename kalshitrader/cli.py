@@ -437,8 +437,27 @@ def cmd_backtest(args, s: Settings) -> int:
         ("stop_loss_cents", args.stop), ("min_edge_cents", args.edge)) if v is not None})
     if args.no_stop:
         settings = replace(settings, use_stop_loss=False)
-    r = run_backtest(store, settings, since=args.since)
-    print(f"settings   {r.settings}")
+    if args.compare_execution:
+        from kalshitrader.backtest import load_history
+
+        history = load_history(store, since=args.since)
+        taker = run_backtest(store, settings, history=history)
+        maker = run_backtest(store, settings, history=history, maker=True)
+        print(f"{'':10s} {'closed':>7s} {'open':>5s} {'win%':>6s} {'P&L':>9s} {'per trade':>10s} {'fees':>8s} {'fill rate':>10s}")
+        for name, r in (("taker", taker), ("maker", maker)):
+            fr = f"{r.fill_rate * 100:.0f}%" if r.fill_rate is not None else "-"
+            print(f"{name:10s} {len(r.closed):>7d} {r.open_at_end:>5d} {r.win_rate * 100:>5.0f}% "
+                  f"{r.pnl:>+9.2f} {r.expectancy:>+10.2f} {r.fees:>8.2f} {fr:>10s}")
+        if maker.posted:
+            print(f"\nmaker posted {maker.posted} orders, {maker.unfilled} expired unfilled.")
+        print("\nTaker crosses the spread on both sides and always fills. Maker posts at the bid")
+        print("and sells at the ask, saving the spread, but only fills when someone trades")
+        print("against it - and the fill model cannot see the queue ahead of you, so treat the")
+        print("fill rate as a ceiling.")
+        return 0
+
+    r = run_backtest(store, settings, since=args.since, maker=args.maker)
+    print(f"settings   {r.settings}{' (maker)' if args.maker else ''}")
     print(f"replayed   {r.tickers} tickers, {r.snapshots:,} snapshots, {r.span_hours:.1f}h\n")
     if not r.closed:
         print(f"No trades closed{' (' + str(r.open_at_end) + ' still open at the end)' if r.open_at_end else ''}.")
@@ -549,6 +568,10 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--no-stop", action="store_true", help="ride positions to target or settlement")
     bt.add_argument("--since", default=None, help="ISO timestamp; replay only from here")
     bt.add_argument("--sweep", choices=["dip", "stop", "target"], help="compare a range of one setting")
+    bt.add_argument("--maker", action="store_true",
+                    help="post at the bid and sell at the ask instead of crossing the spread")
+    bt.add_argument("--compare-execution", action="store_true",
+                    help="run the same history both ways and show what crossing the spread costs")
     bt.add_argument("--trades", type=int, default=0, help="also print this many individual trades")
     bt.set_defaults(fn=cmd_backtest)
 

@@ -159,3 +159,46 @@ def test_history_can_be_limited_by_time_and_ticker(store, tmp_path):
     assert set(load_history(store, tickers=["KX-A"])) == {"KX-A"}
     later = (START + timedelta(seconds=100)).isoformat()
     assert all(r["ts"] >= later for rows in load_history(store, since=later).values() for r in rows)
+
+
+# ------------------------------------------------------- maker vs taker fills
+def test_a_maker_order_buys_at_the_bid_not_the_ask(store, tmp_path):
+    record(store, "KX-A", [60] * 5 + [70] * 5 + [64, 58, 52, 50, 51, 55, 60, 66, 72, 78])
+    taker = run_backtest(store, settings(tmp_path))
+    maker = run_backtest(store, settings(tmp_path), maker=True)
+    assert taker.closed and maker.closed
+    # The recorded book is bid/bid+1, and the taker also pays a cent of slippage.
+    assert maker.closed[0]["entry_price"] < taker.closed[0]["entry_price"]
+    assert maker.closed[0]["exit_price"] > taker.closed[0]["exit_price"], "a resting sell rests at the ask"
+    assert maker.pnl > taker.pnl, "not crossing the spread on either side has to be worth something"
+
+
+def test_a_maker_order_does_not_fill_when_nothing_trades(store, tmp_path):
+    """Posting is not buying. If the volume counter never moves, nobody traded against
+    the order and it must expire rather than being handed a free fill.
+
+    Liveness is taken off the gate here so the test is about the fill model alone -
+    a market with no volume would otherwise never be judged live enough to buy.
+    """
+    record(store, "KX-A", [60] * 5 + [70] * 5 + [64, 58, 52, 50, 51, 55, 60, 66], volume_step=0)
+    s = settings(tmp_path, live_only=False)
+    r = run_backtest(store, s, maker=True, maker_ttl_seconds=60)
+    assert r.posted >= 1, "the strategy should still have wanted to buy"
+    assert r.trades == [], "no counterparty means no position"
+    assert r.unfilled == r.posted and r.fill_rate == 0.0
+    # The same history, crossing the spread, does trade: only the fill model differs.
+    assert run_backtest(store, s).trades, "the taker path should still have entered"
+
+
+def test_a_maker_order_expires_instead_of_resting_into_a_moved_market(store, tmp_path):
+    record(store, "KX-A", [60] * 5 + [70] * 5 + [64, 58, 52, 50] + [50] * 60, volume_step=0)
+    r = run_backtest(store, settings(tmp_path, live_only=False), maker=True, maker_ttl_seconds=40)
+    assert r.unfilled >= 1, "an order nobody traded against must be given up on"
+    assert r.posted > r.unfilled or r.trades == []
+
+
+def test_the_fill_rate_is_reported_so_maker_results_can_be_discounted(store, tmp_path):
+    record(store, "KX-A", [60] * 5 + [70] * 5 + [64, 58, 52, 50, 51, 55, 60, 66, 72, 78])
+    assert run_backtest(store, settings(tmp_path)).fill_rate is None, "taker always fills; no rate to report"
+    r = run_backtest(store, settings(tmp_path), maker=True)
+    assert r.fill_rate is not None and 0.0 <= r.fill_rate <= 1.0

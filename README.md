@@ -125,6 +125,27 @@ time (snapshots record prices, not titles), so research and form are not replaye
 fills are taken at the quoted price plus the paper broker's slippage, which is
 optimistic on a thin book; and it can only replay markets the bot was watching.
 
+### What crossing the spread costs
+
+```bash
+kalshitrader backtest --compare-execution
+```
+
+```
+            closed  open   win%       P&L  per trade     fees  fill rate
+taker            7     1    14%     -7.70      -1.10     2.60          -
+maker            7     1    14%     -4.34      -0.62     2.60       100%
+```
+
+The bot currently crosses the spread on both sides. Posting at the bid and selling at
+the ask saves it — at a 2¢ spread that is worth about as much as the entire net edge.
+The catch is that a posted order only fills when somebody trades against it, so the
+replay models that rather than assuming it: a buy posted at B fills when a later
+snapshot shows the bid at or below B *and* the volume counter has moved.
+
+That model cannot see the queue ahead of you, so **treat the fill rate as a ceiling**.
+Execution is still taker-only in live and paper trading; measure first.
+
 Watch the **open** column. A configuration that simply holds its losers shows a
 flattering P&L because only closed trades count.
 
