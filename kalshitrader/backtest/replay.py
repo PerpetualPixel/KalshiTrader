@@ -17,13 +17,19 @@ What it is honest about:
     is optimistic on thin books: a real order can move the price it is filling at.
   * it can only replay markets the bot was watching. A dip in a market that was
     switched off was never recorded, so it cannot be tested.
+  * a replay that buys nothing looks exactly like a replay that is broken, so it
+    never just reports zero: every pass is tallied by which gate turned it away, and
+    `data_profile` reads the same history with no gates at all. Rules too tight and
+    prices that never moved are then two different answers rather than one silence.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from kalshitrader.analysis.blockers import ranked as ranked_blockers
+from kalshitrader.analysis.blockers import tally as tally_blocker
 from kalshitrader.analysis.ev import kalshi_fee_cents
 from kalshitrader.config import Settings
 from kalshitrader.kalshi.models import Market
@@ -79,6 +85,13 @@ class BacktestResult:
     skipped_no_history: int = 0
     posted: int = 0  # maker orders placed
     unfilled: int = 0  # maker orders that expired without a counterparty
+    evaluations: int = 0  # legs the strategy was asked to judge
+    blockers: dict[str, dict] = field(default_factory=dict)  # why it passed, grouped
+
+    @property
+    def why_nothing(self) -> list[dict]:
+        """The reasons the strategy passed, commonest first."""
+        return ranked_blockers(self.blockers)
 
     @property
     def fill_rate(self) -> float | None:
@@ -259,7 +272,11 @@ def run_backtest(store, settings: Settings, *, since: str | None = None, tickers
                 continue
             contest, leg_name = _contest_for(ticker, snap)
             signal = strategy.evaluate_leg(contest, leg_name, contest.legs[leg_name], None, None, state, now)
+            result.evaluations += 1
             if not signal.is_trade:
+                # A replay that buys nothing and a replay that is broken look identical
+                # from the outside. Record which gate turned each candidate away.
+                tally_blocker(result.blockers, signal.rationale, ticker)
                 continue
             if maker:
                 # Post at the bid rather than crossing to the ask. Nothing is owned
@@ -357,3 +374,52 @@ def sweep_settings(store, base: Settings, variations: list[dict], *, since: str 
     for changes in variations:
         out.append(run_backtest(store, replace(base, **changes), history=history))
     return out
+
+
+@dataclass
+class DataProfile:
+    """What the recorded prices contain, measured without reference to any strategy.
+
+    When a replay returns no trades, the first question is whether the rules were too
+    tight or the history simply holds nothing to trade. The blocker tally answers the
+    first. This answers the second: it walks the same rolling-high arithmetic the dip
+    gate uses, but applies no gates at all, so a flat hour of quotes and an hour full
+    of dips the rules rejected are told apart.
+    """
+
+    tickers: int = 0
+    quoted_tickers: int = 0  # had a two-sided quote at some point
+    traded_tickers: int = 0  # cumulative volume counter moved
+    deepest: list[tuple[str, int]] = field(default_factory=list)  # (ticker, deepest dip in cents)
+    dips_at_least: dict[int, int] = field(default_factory=dict)  # cents -> tickers reaching it
+
+    @property
+    def max_dip(self) -> int:
+        return max((d for _, d in self.deepest), default=0)
+
+
+def data_profile(history: dict[str, list[dict]], *, window_minutes: int = 45,
+                 buckets: tuple[int, ...] = (2, 4, 6, 8, 12, 20)) -> DataProfile:
+    """Deepest dip, quotes and tape activity per ticker, from the snapshots alone."""
+    profile = DataProfile(tickers=len(history))
+    for ticker, rows in history.items():
+        window: list[tuple[datetime, int]] = []
+        deepest = 0
+        quoted = False
+        volumes = [r["volume"] for r in rows if r.get("volume") is not None]
+        for row in rows:
+            ask, bid = row.get("yes_ask") or 0, row.get("yes_bid") or 0
+            if ask <= 0:
+                continue
+            quoted = quoted or bid > 0
+            stamp = _parse(row["ts"])
+            cutoff = stamp - timedelta(minutes=window_minutes)
+            window.append((stamp, ask))
+            window = [w for w in window if w[0] >= cutoff]
+            deepest = max(deepest, max(a for _, a in window) - ask)
+        profile.deepest.append((ticker, deepest))
+        profile.quoted_tickers += quoted
+        profile.traded_tickers += len(volumes) >= 2 and volumes[-1] > volumes[0]
+    profile.deepest.sort(key=lambda p: -p[1])
+    profile.dips_at_least = {c: sum(1 for _, d in profile.deepest if d >= c) for c in buckets}
+    return profile

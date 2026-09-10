@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import httpx
 import pytest
 
@@ -149,7 +151,11 @@ def test_parses_dollar_string_prices():
     assert m.last_price == 88 and m.yes_spread == 1 and m.has_quote
     assert (m.volume, m.volume_24h, m.open_interest) == (5836, 5826, 5777)
     assert m.subtitle == "Alexander Zverev" and m.is_tradeable
-    assert m.starts_at is not None and not m.has_started()
+    # Pinned against a fixed clock: "has this started" is relative to now, and a
+    # bare has_started() turns this into a test that passes until the date goes by.
+    assert m.starts_at == datetime(2026, 9, 9, 18, 30, tzinfo=timezone.utc)
+    assert not m.has_started(datetime(2026, 9, 9, 18, 0, tzinfo=timezone.utc))
+    assert m.has_started(datetime(2026, 9, 9, 19, 0, tzinfo=timezone.utc))
 
 
 def test_still_parses_legacy_integer_cent_fields():
