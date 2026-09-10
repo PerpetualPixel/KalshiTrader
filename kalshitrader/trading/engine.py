@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kalshitrader.analysis.blockers import ranked as ranked_blockers
+from kalshitrader.analysis.blockers import tally as tally_blocker
 from kalshitrader.config import Settings, apply_overrides, load_settings
 from kalshitrader.execution.base import Broker
 from kalshitrader.kalshi.client import KalshiClient, KalshiError
@@ -181,7 +182,7 @@ class TennisEngine(Engine):
             watch.append(self._watch_row(match, assessment, signals, live_any, "live" if live_any else "pre-match", now))
             for sig in signals:
                 if not sig.is_trade:
-                    _tally_blocker(blockers, sig)
+                    tally_blocker(blockers, sig.rationale, sig.ticker)
                     if sig.ev_net > 0 or "dip" in sig.rationale:
                         self.store.add_signal(sig.to_record())
                     continue
@@ -197,7 +198,7 @@ class TennisEngine(Engine):
         self.store.set_state("research_status", self.analyst.status if self.s.research_enabled else self.form.status)
         self.store.set_state("form_status", self.form.status)
         self.store.set_state("research_pending", getattr(self.analyst, "pending", 0))
-        self.store.set_state("tennis_blockers", sorted(blockers.values(), key=lambda r: -r["count"])[:12])
+        self.store.set_state("tennis_blockers", ranked_blockers(blockers))
         self.store.set_state("tennis_counts", {
             "matches": len(matches), "live": sum(1 for r in watch if r["status"] == "live"),
             "researched": sum(1 for r in watch if r["researched"]),
@@ -314,21 +315,6 @@ class TennisEngine(Engine):
 # Every number stripped out, so "dip 3c < 14c (high 60c, ask 57c)" and the same
 # sentence about another market collapse into one row. Answering "why did nothing
 # trade?" needs the shape of the reason, not 76 copies of it.
-_NUMBERS = re.compile(r"[-+]?\d+(?:\.\d+)?")
-
-
-def _tally_blocker(blockers: dict[str, dict], sig) -> None:
-    reason = (sig.rationale or "").strip()
-    if not reason:
-        return
-    key = _NUMBERS.sub("#", reason)
-    row = blockers.get(key)
-    if row is None:
-        blockers[key] = {"reason": key, "count": 1, "example": reason[:120], "ticker": sig.ticker}
-    else:
-        row["count"] += 1
-
-
 def _snapshot_dict(m: Market, match: Contest | None = None) -> dict:
     """Snapshot row for a market, preferring order-book prices when the list response
     carried none (in-play markets often report 0 in /markets)."""

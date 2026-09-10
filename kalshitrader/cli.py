@@ -398,7 +398,7 @@ def cmd_backtest(args, s: Settings) -> int:
     """Replay recorded prices through the strategy, with one or many configurations."""
     from dataclasses import replace
 
-    from kalshitrader.backtest import run_backtest, sweep_settings
+    from kalshitrader.backtest import load_history, run_backtest, sweep_settings
     from kalshitrader.tracking.db import Store
 
     store = Store(s.db_path)
@@ -414,7 +414,8 @@ def cmd_backtest(args, s: Settings) -> int:
         variations = [{"dip_cents": d} for d in (6, 8, 10, 12, 14, 18, 24, 30)] if args.sweep == "dip" \
             else [{"stop_loss_cents": v, "use_stop_loss": v > 0} for v in (0, 4, 6, 8, 12, 20)] if args.sweep == "stop" \
             else [{"take_profit_cents": v} for v in (4, 6, 8, 10, 14, 20)]
-        results = sweep_settings(store, s, variations, since=args.since)
+        base = replace(s, live_only=False) if args.ignore_liveness else s
+        results = sweep_settings(store, base, variations, since=args.since)
         label = {"dip": "dip", "stop": "stop", "target": "target"}[args.sweep]
         print(f"{label:>7s} {'closed':>7s} {'open':>5s} {'win%':>6s} {'break-even':>11s} {'P&L':>9s} {'per trade':>10s} {'fees':>8s}")
         unfinished = False
@@ -430,6 +431,13 @@ def cmd_backtest(args, s: Settings) -> int:
             print("\nSome rows left more positions open than they closed. Those P&L figures count")
             print("only what finished, so they flatter a configuration that simply holds losers -")
             print("read them alongside the open column, or replay a longer history.")
+        if not any(r.trades for r in results):
+            # Every setting on this axis bought nothing. That is not a result about the
+            # setting, so do not let it read as one.
+            print(f"\nNo row bought anything, so this sweep says nothing about the {label}.")
+            # variations[0] is the loosest row on every axis, so its settings are the
+            # fairest ones to explain the emptiness against.
+            _explain_nothing(results[0], load_history(store, since=args.since), replace(base, **variations[0]))
         return 0
 
     settings = replace(s, **{k: v for k, v in (
@@ -437,6 +445,8 @@ def cmd_backtest(args, s: Settings) -> int:
         ("stop_loss_cents", args.stop), ("min_edge_cents", args.edge)) if v is not None})
     if args.no_stop:
         settings = replace(settings, use_stop_loss=False)
+    if args.ignore_liveness:
+        settings = replace(settings, live_only=False)
     if args.compare_execution:
         from kalshitrader.backtest import load_history
 
@@ -450,6 +460,10 @@ def cmd_backtest(args, s: Settings) -> int:
                   f"{r.pnl:>+9.2f} {r.expectancy:>+10.2f} {r.fees:>8.2f} {fr:>10s}")
         if maker.posted:
             print(f"\nmaker posted {maker.posted} orders, {maker.unfilled} expired unfilled.")
+        if not taker.trades and not maker.posted:
+            print("\nNeither execution style bought anything, so this comparison is empty.")
+            _explain_nothing(taker, history, settings)
+            return 0
         print("\nTaker crosses the spread on both sides and always fills. Maker posts at the bid")
         print("and sells at the ask, saving the spread, but only fills when someone trades")
         print("against it - and the fill model cannot see the queue ahead of you, so treat the")
@@ -461,7 +475,10 @@ def cmd_backtest(args, s: Settings) -> int:
     print(f"replayed   {r.tickers} tickers, {r.snapshots:,} snapshots, {r.span_hours:.1f}h\n")
     if not r.closed:
         print(f"No trades closed{' (' + str(r.open_at_end) + ' still open at the end)' if r.open_at_end else ''}.")
-        print("Nothing in this history met the entry rules - loosen the dip, or record more.")
+        if not r.trades:
+            _explain_nothing(r, load_history(store, since=args.since), settings)
+        else:
+            print("Everything it bought was still open when the history ran out - replay a longer span.")
         return 0
     be = f"{r.break_even_win_rate * 100:.0f}%" if r.break_even_win_rate is not None else "n/a"
     pf = f"{r.profit_factor:.2f}" if r.profit_factor is not None else "inf"
@@ -475,6 +492,44 @@ def cmd_backtest(args, s: Settings) -> int:
             print(f"{t['ticker'][:34]:34s} {t['entry_price']:>4d} {t['exit_price']:>4d} "
                   f"{t['count']:>5d} {t['pnl']:>+8.2f}  {t['exit_reason']}")
     return 0
+
+
+def _explain_nothing(result, history: dict, s: Settings) -> None:
+    """Why the replay bought nothing: which gate blocked it, and what the data held.
+
+    Zero trades has two very different causes - rules too tight for the prices, or
+    prices that never moved - and they call for opposite responses. Printing the
+    blocker tally next to a strategy-free reading of the history separates them.
+    """
+    from kalshitrader.backtest import data_profile
+
+    print("\nwhy nothing was bought")
+    checks = result.evaluations
+    for row in result.why_nothing[:8]:
+        share = f"{row['count'] / checks * 100:>4.0f}%" if checks else "    "
+        print(f"  {row['count']:>8,} {share}  {row['reason'][:74]}")
+    if result.why_nothing:
+        print(f"  e.g. {result.why_nothing[0]['ticker']}: {result.why_nothing[0]['example']}")
+    print(f"  {checks:,} checks in total")
+
+    p = data_profile(history, window_minutes=s.swing_window_minutes)
+    print(f"\nwhat the history holds  ({p.tickers} tickers, {p.quoted_tickers} ever two-sided, "
+          f"{p.traded_tickers} with tape movement)")
+    print("  tickers whose price fell this far below its own "
+          f"{s.swing_window_minutes}m high:")
+    for cents, count in p.dips_at_least.items():
+        print(f"    >= {cents:>2}c  {count:>4d}")
+    if p.deepest[:3]:
+        print("  deepest: " + ", ".join(f"{t} {d}c" for t, d in p.deepest[:3]))
+    if p.max_dip < s.dip_cents:
+        print(f"\n  The deepest dip anywhere in this history is {p.max_dip}c, under the {s.dip_cents}c")
+        print("  required to buy. No setting of the other knobs changes that - record a longer")
+        print("  span, or test a dip this history can actually reach.")
+    elif p.traded_tickers == 0 and s.live_only:
+        print("\n  Nothing in this history shows the cumulative volume counter moving, so the")
+        print("  liveness gate rejects every market. Either these snapshots predate volume")
+        print("  being recorded, or nothing traded while they were taken. LIVE_ONLY=false")
+        print("  replays them on quotes alone.")
 
 
 def cmd_balance(args, s: Settings) -> int:
@@ -566,6 +621,8 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--stop", type=int, default=None, help="override the stop loss")
     bt.add_argument("--edge", type=float, default=None, help="override the minimum edge")
     bt.add_argument("--no-stop", action="store_true", help="ride positions to target or settlement")
+    bt.add_argument("--ignore-liveness", action="store_true",
+                    help="replay on quotes alone, for history recorded before volume was")
     bt.add_argument("--since", default=None, help="ISO timestamp; replay only from here")
     bt.add_argument("--sweep", choices=["dip", "stop", "target"], help="compare a range of one setting")
     bt.add_argument("--maker", action="store_true",

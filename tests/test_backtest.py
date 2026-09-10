@@ -202,3 +202,57 @@ def test_the_fill_rate_is_reported_so_maker_results_can_be_discounted(store, tmp
     assert run_backtest(store, settings(tmp_path)).fill_rate is None, "taker always fills; no rate to report"
     r = run_backtest(store, settings(tmp_path), maker=True)
     assert r.fill_rate is not None and 0.0 <= r.fill_rate <= 1.0
+
+
+# ------------------------------------------------- why a replay bought nothing
+def test_a_replay_that_buys_nothing_says_which_gate_turned_it_away(store, tmp_path):
+    # A 6c wobble against a 14c dip requirement: the dip gate should own every check.
+    record(store, "KX-A", [60, 62, 64, 58, 60, 62, 64, 58, 60, 62])
+    r = run_backtest(store, settings(tmp_path))
+    assert not r.trades
+    assert r.evaluations > 0
+    top = r.why_nothing[0]
+    assert "dip" in top["reason"]
+    checks = sum(row["count"] for row in r.why_nothing)
+    assert checks == r.evaluations, "every check that passed is accounted for"
+    assert top["count"] > checks / 2, "the dip gate, not something incidental, did the blocking"
+    assert top["ticker"] == "KX-A"
+    # Numbers are blanked so thousands of near-identical rationales collapse to one row.
+    assert "#" in top["reason"] and top["example"] != top["reason"]
+
+
+def test_a_dead_tape_is_reported_as_the_liveness_gate_not_as_a_strategy_result(store, tmp_path):
+    # Prices that swing plenty, but the cumulative volume counter never moves.
+    record(store, "KX-A", [60] * 5 + [70] * 5 + [50, 52, 56, 60, 66], volume_step=0)
+    r = run_backtest(store, settings(tmp_path, live_only=True, live_min_volume_delta=1))
+    assert not r.trades
+    assert "not live" in r.why_nothing[0]["reason"]
+    # Same history, same dip, liveness off: the prices were always tradeable, only the
+    # tape was missing. This is what `backtest --ignore-liveness` turns on.
+    assert run_backtest(store, settings(tmp_path, live_only=False)).trades
+
+
+def test_the_data_profile_measures_dips_without_applying_any_gates(store, tmp_path):
+    from kalshitrader.backtest import data_profile
+
+    record(store, "KX-DEEP", [60] * 5 + [80] * 5 + [55, 56, 58])  # 25c below its high
+    record(store, "KX-FLAT", [40] * 12, volume_step=0)
+    p = data_profile(load_history(store), window_minutes=45)
+
+    assert p.tickers == 2
+    assert p.quoted_tickers == 2
+    assert p.traded_tickers == 1, "KX-DEEP's volume counter moved; KX-FLAT's did not"
+    assert p.max_dip == 25
+    assert dict(p.deepest)["KX-FLAT"] == 0
+    assert p.dips_at_least[20] == 1 and p.dips_at_least[2] == 1
+
+
+def test_the_data_profile_only_looks_back_over_the_swing_window(store, tmp_path):
+    from kalshitrader.backtest import data_profile
+
+    # An 81c ask, twenty minutes at 61c, then 56c. Over 45m the last price is measured
+    # against the 81c high for a 25c dip. Over 5m that high has aged out long before the
+    # fall, so the deepest dip the window ever sees is the original 81c -> 61c drop.
+    record(store, "KX-A", [80] * 3 + [60] * 60 + [55], every_seconds=20)
+    assert data_profile(load_history(store), window_minutes=45).max_dip == 25
+    assert data_profile(load_history(store), window_minutes=5).max_dip == 20
